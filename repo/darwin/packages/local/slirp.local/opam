@@ -43,6 +43,9 @@ depends: [
   "astring"
   "mirage-flow" { = "1.1.0" }
   "mirage-types-lwt" { = "2.8.999" }
+  "cohttp"
+  "mirage-http"
+  "mirage-dns" { < "2.6.1" }
   "protocol-9p" { = "0.8.0" }
   "ounit"
   "alcotest"

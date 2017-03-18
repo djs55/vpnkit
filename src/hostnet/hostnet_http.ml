@@ -14,6 +14,11 @@ module Make
     (Time: V1_LWT.TIME)
     (Clock: V1.CLOCK) = struct
 
+  module Ch = Channel.Make(Tcp)
+  module IO = Cohttp_mirage_io.Make(Ch)
+  module Request = Cohttp.Request.Make(IO)
+  module Response = Cohttp.Response.Make(IO)
+
   type t = unit
 
   let destroy t =
@@ -26,15 +31,18 @@ module Make
     let listeners port =
       Log.debug (fun f -> f "TCP handshake complete");
       Some (fun flow ->
-        let module C = Channel.Make(Tcp) in
-        let c = C.create flow in
-        C.read_line c
-        >>= fun bufs ->
-        Log.info (fun f -> f "Read %s" (String.concat "" (List.map Cstruct.to_string bufs)));
-        List.iter (C.write_buffer c) bufs;
-        C.flush c
-        >>= fun () ->
-        Tcp.close flow
+        let c = Ch.create flow in
+        Request.read c
+        >>= function
+        | `Eof ->
+          Log.info (fun f -> f "EOF on HTTP");
+          Tcp.close flow
+        | `Invalid x ->
+          Log.info (fun f -> f "Invalid HTTP request: %s" x);
+          Tcp.close flow
+        | `Ok request ->
+          Log.info (fun f -> f "HTTP %s" (Uri.to_string @@ Cohttp.Request.uri request));
+          Tcp.close flow
       ) in
     Lwt.return listeners
 
