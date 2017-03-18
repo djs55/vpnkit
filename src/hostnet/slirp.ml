@@ -117,6 +117,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
   end
 
   module Dns_forwarder = Hostnet_dns.Make(Stack_ipv4)(Stack_udp)(Stack_tcp)(Host.Sockets)(Host.Dns)(Host.Time)(Host.Clock)(Recorder)
+  module Http_proxy = Hostnet_http.Make(Stack_ipv4)(Stack_tcp)(Host.Sockets)(Host.Time)(Host.Clock)
   module Udp_nat = Hostnet_udp.Make(Host.Sockets)(Host.Time)
 
   (* Global variable containing the global DNS configuration *)
@@ -124,6 +125,10 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
     let ip = Ipaddr.V4 (Ipaddr.V4.of_string_exn default_host) in
     let local_address = { Dns_forward.Config.Address.ip; port = 0 } in
     ref (Dns_forwarder.create ~local_address @@ Dns_policy.config ())
+
+  (* Global variable containing the global HTTP proxy *)
+  let http_proxy =
+    ref (Http_proxy.create ())
 
   let is_dns = let open Frame in function
     | Ethernet { payload = Ipv4 { payload = Udp { src = 53; _ }; _ }; _ }
@@ -411,6 +416,14 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
           (fun () ->
             !dns >>= fun t ->
             Dns_forwarder.handle_tcp ~t
+          ) raw
+      (* TCP to port 3128 -> HTTP forwarder *)
+      | Ipv4 { src; dst; payload = Tcp { src = src_port; dst = 3128; syn; raw; payload = Payload _; _ }; _ } ->
+        let id = { Stack_tcp_wire.local_port = 3128; dest_ip = src; local_ip = dst; dest_port = src_port } in
+        Endpoint.intercept_tcp_syn t.endpoint ~id ~syn
+          (fun () ->
+            !http_proxy >>= fun t ->
+            Http_proxy.handle_tcp ~t
           ) raw
       (* UDP to port 123: localhost NTP *)
       | Ipv4 { src; payload = Udp { src = src_port; dst = 123; payload = Payload payload; _ }; _ } ->
