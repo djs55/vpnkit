@@ -1,4 +1,5 @@
 open Lwt.Infix
+open Sexplib.Std
 
 let src =
   let src = Logs.Src.create "http" ~doc:"HTTP proxy" in
@@ -6,6 +7,25 @@ let src =
   src
 
 module Log = (val Logs.src_log src : Logs.LOG)
+
+module Config = struct
+  type upstream = {
+    http: string;
+    https: string;
+  } [@@deriving sexp]
+
+  type t = upstream option [@@deriving sexp]
+
+  let none = None
+
+  let to_string t = Sexplib.Sexp.to_string_hum @@ sexp_of_t t
+
+  let of_string x =
+    try
+      Ok (t_of_sexp @@ Sexplib.Sexp.of_string x)
+    with _ ->
+      Error (`Msg (Printf.sprintf "Unable to parse: '%s'" x))
+end
 
 module Make
     (Ip: V1_LWT.IPV4 with type prefix = Ipaddr.V4.t)
@@ -19,13 +39,15 @@ module Make
   module Request = Cohttp.Request.Make(IO)
   module Response = Cohttp.Response.Make(IO)
 
-  type t = unit
+  type t = {
+    config: Config.t;
+  }
 
   let destroy t =
     Lwt.return_unit
 
-  let create () =
-    Lwt.return_unit
+  let create ~upstream () =
+    Lwt.return { config = upstream }
 
   let handle_tcp ~t =
     let listeners port =

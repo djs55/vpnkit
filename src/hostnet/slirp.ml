@@ -128,7 +128,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
 
   (* Global variable containing the global HTTP proxy *)
   let http_proxy =
-    ref (Http_proxy.create ())
+    ref (Http_proxy.create ~upstream:Hostnet_http.Config.none ())
 
   let is_dns = let open Frame in function
     | Ethernet { payload = Ipv4 { payload = Udp { src = 53; _ }; _ }; _ }
@@ -873,6 +873,25 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
       ) string_dns_settings
     >>= fun dns_settings ->
 
+    let http_proxy_path = driver @ [ "slirp"; "proxy"; "upstream" ] in
+    Config.string_option config http_proxy_path
+    >>= fun string_http_proxy_settings ->
+    Active_config.map
+      (function
+        | Some txt ->
+          let open Hostnet_http in
+          begin match Config.of_string txt with
+          | Result.Ok config ->
+            Lwt.return (Some config)
+          | Result.Error (`Msg m) ->
+            Log.err (fun f -> f "failed to parse %s: %s" (String.concat "/" http_proxy_path) m);
+            Lwt.return None
+          end
+        | None ->
+          Lwt.return None
+      ) string_http_proxy_settings
+    >>= fun http_proxy_settings ->
+
     let domain_name = ref "local" in
     let get_domain_name () = !domain_name in
     let domain_name_path = driver @ [ "slirp"; "domain" ] in
@@ -983,6 +1002,29 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
       >>= fun settings ->
       monitor_dns_settings settings in
     Lwt.async (fun () -> log_exception_continue "monitor DNS settings" (fun () -> monitor_dns_settings dns_settings));
+
+    let rec monitor_http_proxy_settings settings =
+      begin match Active_config.hd settings with
+        | None ->
+          Log.info (fun f -> f "remove upstream HTTP proxy");
+          !http_proxy >>= fun t ->
+          Http_proxy.destroy t
+          >>= fun () ->
+          http_proxy := Http_proxy.create ~upstream:Hostnet_http.Config.none ();
+          Lwt.return_unit
+        | Some (config: Hostnet_http.Config.t) ->
+          Log.info (fun f -> f "updating upstream HTTP proxy to %s" (Hostnet_http.Config.to_string config));
+          !http_proxy >>= fun t ->
+          Http_proxy.destroy t
+          >>= fun () ->
+          http_proxy := Http_proxy.create ~upstream:config ();
+          Lwt.return_unit
+      end
+      >>= fun () ->
+      Active_config.tl settings
+      >>= fun settings ->
+      monitor_http_proxy_settings settings in
+    Lwt.async (fun () -> log_exception_continue "monitor HTTP proxy settings" (fun () -> monitor_http_proxy_settings http_proxy_settings));
 
     let mtu_path = driver @ [ "slirp"; "mtu" ] in
     Config.int config ~default:default_mtu mtu_path
