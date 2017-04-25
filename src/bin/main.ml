@@ -488,7 +488,7 @@ let command =
 
 let () =
   Printexc.record_backtrace true;
-  Log.info (fun f -> f "SOMAXCONN = %d (OCaml)" Utils.somaxconn);
+  Printf.printf "SOMAXCONN = %d (OCaml)\n%!" Utils.somaxconn;
 
   match Term.eval command with
   | `Error _ -> exit 1
