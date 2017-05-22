@@ -93,6 +93,7 @@ type config = {
   bridge_connections: bool;
   mtu: int;
   host_names: Dns.Name.t list;
+  http_intercept: bool ref;
 }
 
 module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLICY)(Host: Sig.HOST)(Vnet : Vnetif.BACKEND with type macaddr = Macaddr.t) = struct
@@ -126,6 +127,8 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
   end
 
   module Dns_forwarder = Hostnet_dns.Make(Stack_ipv4)(Stack_udp)(Stack_tcp)(Host.Sockets)(Host.Dns)(Host.Time)(Host.Clock)(Recorder)
+  module Http_forwarder = Hostnet_http.Make(Stack_ipv4)(Stack_udp)(Stack_tcp)(Host.Sockets)(Host.Dns)
+
   module Udp_nat = Hostnet_udp.Make(Host.Sockets)(Host.Time)
 
   (* Global variable containing the global DNS configuration *)
@@ -133,6 +136,10 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
     let ip = Ipaddr.V4 (Ipaddr.V4.of_string_exn default_host) in
     let local_address = { Dns_forward.Config.Address.ip; port = 0 } in
     ref (Dns_forwarder.create ~local_address ~host_names:[] @@ Dns_policy.config ())
+
+  (* Global variable containing the global HTTP proxy configuration *)
+  let http =
+    ref Http_forwarder.none
 
   let is_dns = let open Frame in function
     | Ethernet { payload = Ipv4 { payload = Udp { src = 53; _ }; _ }; _ }
@@ -468,6 +475,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
     type t = {
       endpoint:        Endpoint.t;
       udp_nat:         Udp_nat.t;
+      http_intercept:  bool ref;
     }
     (** Represents a remote system by proxying data to and from sockets *)
 
@@ -482,9 +490,19 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
           | _ ->
             Lwt.return_unit in
         Stack_ipv4.input t.endpoint.Endpoint.ipv4 ~tcp:none ~udp:none ~default raw
+      (* Transparent HTTP intercept? *)
       | Ipv4 { src = dest_ip; dst = local_ip; payload = Tcp { src = dest_port; dst = local_port; syn; raw; _ }; _ } ->
         let id = { Stack_tcp_wire.local_port; dest_ip; local_ip; dest_port } in
-        Endpoint.input_tcp t.endpoint ~id ~syn (Ipaddr.V4 local_ip, local_port) raw
+        let callback =
+          if not !(t.http_intercept)
+          then None
+          else Http_forwarder.handle ~dst:(local_ip, local_port) ~t:(!http) in
+        begin match callback with
+        | None ->
+          Endpoint.input_tcp t.endpoint ~id ~syn (Ipaddr.V4 local_ip, local_port) raw (* common case *)
+        | Some cb ->
+          Endpoint.intercept_tcp_syn t.endpoint ~id ~syn (fun _ -> cb) raw
+        end
       | Ipv4 { src; dst; ihl; dnf; raw; payload = Udp { src = src_port; dst = dst_port; len; payload = Payload payload; _ }; _ } ->
         let description = Printf.sprintf "%s:%d -> %s:%d"
             (Ipaddr.V4.to_string src) src_port (Ipaddr.V4.to_string dst) dst_port in
@@ -500,8 +518,8 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
       | _ ->
         Lwt.return_unit
 
-    let create endpoint udp_nat =
-      let tcp_stack = { endpoint; udp_nat } in
+    let create endpoint udp_nat http_intercept =
+      let tcp_stack = { endpoint; udp_nat; http_intercept } in
       let open Lwt.Infix in
       (* Wire up the listeners to receive future packets: *)
       Switch.Port.listen endpoint.Endpoint.netif
@@ -632,7 +650,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
     >>= fun () ->
     delete_unused_endpoints t ()
 
-  let connect x l2_switch l2_client_id client_macaddr server_macaddr peer_ip local_ip extra_dns_ip mtu get_domain_search get_domain_name (global_arp_table:arp_table) use_bridge =
+  let connect x l2_switch l2_client_id client_macaddr server_macaddr peer_ip local_ip extra_dns_ip mtu get_domain_search get_domain_name (global_arp_table:arp_table) use_bridge http_intercept =
 
     let valid_subnets = [ Ipaddr.V4.Prefix.global ] in
     let valid_sources = [ Ipaddr.V4.of_string_exn "0.0.0.0" ] in
@@ -790,7 +808,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
                find_endpoint dst
                >>= fun endpoint ->
                Log.debug (fun f -> f "create remote TCP/IP proxy for %s" (Ipaddr.V4.to_string dst));
-               Remote.create endpoint udp_nat
+               Remote.create endpoint udp_nat http_intercept
              end >>= function
              | `Error (`Msg m) ->
                Log.err (fun f -> f "Failed to create a TCP/IP stack: %s" m);
@@ -1006,9 +1024,46 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
     Lwt.async (fun () -> restart_on_change "slirp/bridge-connections" string_of_int bridge_conn);
     let bridge_connections = ((Active_config.hd bridge_conn) != 0) in
 
-    Log.info (fun f -> f "Creating slirp server peer_ip:%s local_ip:%s domain_search:%s mtu:%d bridge:%B"
+    let http_proxy = ref None in
+    let https_proxy = ref None in
+    let exclude_proxy = ref None in
+    let http_intercept = ref false in
+    let watch_string_option_ref rf path =
+      Lwt.async (fun () ->
+        let rec loop x =
+          rf := Active_config.hd x;
+          (* Refresh configuration when any parameter changes *)
+          ( Http_forwarder.create ?http:!http_proxy ?https:!https_proxy ?exclude:!exclude_proxy ()
+            >>= function
+            | Error (`Msg m) -> Log.err (fun f -> f "Failed to parse http(s) proxy settings: %s" m); Lwt.return_unit
+            | Ok h -> http := h; Lwt.return_unit )
+          >>= fun () ->
+          Active_config.tl x
+          >>= fun x ->
+          loop x in
+        Config.string_option config path
+        >>= fun x ->
+        loop x
+      ) in
+    watch_string_option_ref http_proxy (driver @ [ "proxy"; "http" ]);
+    watch_string_option_ref https_proxy (driver @ [ "proxy"; "https" ]);
+    watch_string_option_ref exclude_proxy (driver @ [ "proxy"; "exclude" ]);
+
+    Lwt.async (fun () ->
+      let rec loop x =
+        http_intercept := Active_config.hd x;
+        Active_config.tl x
+        >>= fun x ->
+        loop x in
+      Config.bool config ~default:false (driver @ [ "slirp"; "http-intercept" ])
+      >>= fun x ->
+      loop x
+    );
+
+    Log.info (fun f -> f "Creating slirp server peer_ip:%s local_ip:%s domain_search:%s mtu:%d bridge:%B http_intercept:%B"
                  (Ipaddr.V4.to_string peer_ip) (Ipaddr.V4.to_string local_ip)
                  (String.concat " " !domain_search) mtu bridge_connections
+                 (!http_intercept)
              );
 
     let global_arp_table : arp_table = {
@@ -1031,6 +1086,7 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
       bridge_connections;
       mtu;
       host_names;
+      http_intercept;
     } in
     Lwt.return t
 
@@ -1124,14 +1180,14 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
             let client_uuid = Vmnet.get_client_uuid x in
             get_client_ip_id t client_uuid
             >>= fun (client_ip, l2_client_id) ->
-            connect x l2_switch l2_client_id client_macaddr t.server_macaddr client_ip t.local_ip t.extra_dns_ip t.mtu t.get_domain_search t.get_domain_name t.global_arp_table t.bridge_connections
+            connect x l2_switch l2_client_id client_macaddr t.server_macaddr client_ip t.local_ip t.extra_dns_ip t.mtu t.get_domain_search t.get_domain_name t.global_arp_table t.bridge_connections t.http_intercept
         end else begin
             (* When bridge is disabled, just use fixed uuid and peer_ip from t *)
             or_failwith_result "vmnet" @@ Vmnet.of_fd ~client_macaddr_of_uuid:(fun _ -> Lwt.return default_client_macaddr)
                 ~server_macaddr:t.server_macaddr ~mtu:t.mtu client
             >>= fun x ->
             let client_macaddr = Vmnet.get_client_macaddr x in
-            connect x l2_switch (-1) client_macaddr t.server_macaddr t.peer_ip t.local_ip t.extra_dns_ip t.mtu t.get_domain_search t.get_domain_name t.global_arp_table t.bridge_connections
+            connect x l2_switch (-1) client_macaddr t.server_macaddr t.peer_ip t.local_ip t.extra_dns_ip t.mtu t.get_domain_search t.get_domain_name t.global_arp_table t.bridge_connections t.http_intercept
         end
     end
 

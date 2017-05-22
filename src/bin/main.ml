@@ -284,7 +284,8 @@ let main_t socket_url port_control_url introspection_url diagnostics_url max_con
       client_uuids;
       bridge_connections = true;
       mtu = 1500;
-      host_names } in
+      host_names;
+      http_intercept = ref false } in
 
   let config = match db_path with
     | Some db_path ->
