@@ -57,6 +57,9 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
 
     val update_dns: ?local_ip:Ipaddr.t -> ?host_names:Dns.Name.t list -> unit -> unit
     (** Update the DNS forwarder following a configuration change *)
+
+    val update_http: ?http_intercept:bool -> ?http:string -> ?https:string -> ?exclude:string -> t -> unit Error.t
+    (** Update the HTTP forwarder following a configuration change *)
   end
 end
 
