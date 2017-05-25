@@ -71,6 +71,8 @@ module Make
       end
     end
 
+  type flow_cb = (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t
+
   let create ?http ?https ?exclude:_ () : t Error.t =
     let open Error.Infix in
     ( match http with
@@ -320,9 +322,11 @@ module Make
     Lwt.return listeners
 
   let handle ~dst:(ip, port) ~t =
-    if port = 80 && t.http <> None
-    then Some (http ~dst:ip ~t)
-    else if port = 443 && t.https <> None
-    then Some (https ~dst:ip ~t)
-    else None
+    Log.info (fun f -> f "handle (%s, %d) with config = %s" (Ipaddr.V4.to_string ip) port (to_string t));
+    match port, t.http, t.https with
+    (* HTTP proxy data should be redirected to our proxy *)
+    | 3128, Some p, _      -> Some (`Redirect p)
+    | 80,   Some _, _      -> Some (`Handle (http ~dst:ip ~t))
+    | 443,  _,      Some _ -> Some (`Handle (https ~dst:ip ~t))
+    | _,    _,      _      -> None
 end

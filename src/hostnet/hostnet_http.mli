@@ -17,5 +17,14 @@ module Make
         to the proxy [http], HTTPS to the proxy [https] or connects directly
         if the URL matches [exclude]. *)
 
-    val handle: dst:(Ipaddr.V4.t * int) -> t:t -> (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option
+    type flow_cb = (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t
+    (** The Mirage TCP/IP stack internally handles incoming flows with this
+        signature of callback *)
+
+    val handle: dst:(Ipaddr.V4.t * int) -> t:t -> [ `Handle of flow_cb | `Redirect of (Ipaddr.t * int) ] option
+    (** Given a destination address and a configuration, decides how to process
+        the data.
+        [`Handle f] means the flow should be processed by the function [f].
+        [`Redirect address] means the flow should be forwarded to [address].
+      *)
 end

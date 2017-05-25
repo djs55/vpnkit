@@ -501,8 +501,10 @@ module Make(Config: Active_config.S)(Vmnet: Sig.VMNET)(Dns_policy: Sig.DNS_POLIC
         begin match callback with
         | None ->
           Endpoint.input_tcp t.endpoint ~id ~syn (Ipaddr.V4 local_ip, local_port) raw (* common case *)
-        | Some cb ->
+        | Some (`Handle cb) ->
           Endpoint.intercept_tcp_syn t.endpoint ~id ~syn (fun _ -> cb) raw
+        | Some (`Redirect (new_ip, new_port)) ->
+          Endpoint.input_tcp t.endpoint ~id ~syn (new_ip, new_port) raw
         end
       | Ipv4 { src; dst; ihl; dnf; raw; payload = Udp { src = src_port; dst = dst_port; len; payload = Payload payload; _ }; _ } ->
         let description = Printf.sprintf "%s:%d -> %s:%d"
