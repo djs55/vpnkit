@@ -1,0 +1,3 @@
+FROM scratch
+COPY build/vpnkit-forwarder.linux /vpnkit-forwarder
+COPY build/vpnkit-expose-port.linux /vpnkit-expose-port
