@@ -7,6 +7,9 @@ git log | head -100
 git ls-tree HEAD
 ls ..
 
+git ls-tree HEAD -- ../$(basename $(pwd))
+git ls-tree HEAD -- ../go
+
 HASH=$(git ls-tree HEAD -- ../$(basename $(pwd)) | awk '{print $3}')
 
 echo Tagging "${IMAGE_NAME}" with "${DOCKER_REPO}:${HASH}"
