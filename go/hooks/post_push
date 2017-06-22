@@ -3,16 +3,19 @@ set -x
 
 echo hooks/post_push: attempting to compute the tree SHA of the current directory
 pwd
+echo The git version is
+git --version
+
 CURDIR=$(pwd)
+echo Beginning experiments
 cd ..
-git log | head -100
-git ls-tree HEAD
-git ls-tree HEAD go
-git ls-tree HEAD -- go
-git ls-tree HEAD go | awk '{print $3}'
+git ls-tree HEAD && echo $?
+git ls-tree HEAD go && echo $?
+git ls-tree HEAD -- go && echo $?
+cd go
+git ls-tree HEAD && echo $?
+git ls-tree HEAD ../go && echo $?
+git ls-tree HEAD -- ../go && echo $?
+echo Complete!
 
-HASH=$(git ls-tree HEAD -- $(basename ${CURDIR}) | awk '{print $3}')
-
-echo Tagging "${IMAGE_NAME}" with "${DOCKER_REPO}:${HASH}"
-docker tag "${IMAGE_NAME}" "${DOCKER_REPO}:${HASH}"
-docker push "${DOCKER_REPO}:${HASH}"
+exit 1
