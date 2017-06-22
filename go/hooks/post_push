@@ -1,15 +1,11 @@
 #!/bin/bash
-set -x
 
 echo hooks/post_push: attempting to compute the tree SHA of the current directory
 pwd
 CURDIR=$(pwd)
+# The git ls-tree HEAD ../<foo> fails on Docker Cloud's hook environment.
+# It works fine from the parent directory.
 cd ..
-git log | head -100
-git ls-tree HEAD
-git ls-tree HEAD go
-git ls-tree HEAD -- go
-git ls-tree HEAD go | awk '{print $3}'
 
 HASH=$(git ls-tree HEAD -- $(basename ${CURDIR}) | awk '{print $3}')
 
