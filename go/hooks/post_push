@@ -7,8 +7,11 @@ cd ..
 git log | head -100
 git ls-tree HEAD
 git ls-tree HEAD go
+git ls-tree HEAD -- go
 git ls-tree HEAD go | awk '{print $3}'
 cd go
+git ls-tree HEAD ../go
+git ls-tree HEAD -- ../go
 
 HASH=$(git ls-tree HEAD -- ../$(basename $(pwd)) | awk '{print $3}')
 
