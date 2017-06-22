@@ -9,11 +9,8 @@ git ls-tree HEAD
 git ls-tree HEAD go
 git ls-tree HEAD -- go
 git ls-tree HEAD go | awk '{print $3}'
-cd go
-git ls-tree HEAD ../go
-git ls-tree HEAD -- ../go
 
-HASH=$(git ls-tree HEAD -- ../$(basename $(pwd)) | awk '{print $3}')
+HASH=$(git ls-tree HEAD -- $(basename $(pwd)) | awk '{print $3}')
 
 echo Tagging "${IMAGE_NAME}" with "${DOCKER_REPO}:${HASH}"
 docker tag "${IMAGE_NAME}" "${DOCKER_REPO}:${HASH}"
