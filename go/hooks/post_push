@@ -1,7 +1,11 @@
 #!/bin/bash
+set -x
 
 echo hooks/post_push: attempting to compute the tree SHA of the current directory
 pwd
+git log | head -100
+git ls-tree HEAD
+ls ..
 
 HASH=$(git ls-tree HEAD -- ../$(basename $(pwd)) | awk '{print $3}')
 
