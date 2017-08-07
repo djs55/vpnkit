@@ -7,6 +7,11 @@ let src =
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+module Time = struct
+  type 'a io = 'a Lwt.t
+  let sleep_ns x = Uwt.Timer.sleep (Duration.to_ms x)
+end
+
 let default_read_buffer_size = 65536
 
 let log_exception_continue description f =
@@ -100,6 +105,16 @@ module Sockets = struct
       Log.warn (fun f -> f "deregistered connection %d more than once" idx)
     end;
     Hashtbl.remove connection_table idx
+
+  (* regularly dump the connection table *)
+  let _ =
+    let rec loop () =
+      Time.sleep_ns (Duration.of_sec 10)
+      >>= fun () ->
+      Log.info (fun f -> f "Dumping connection table");
+      Hashtbl.iter (fun idx description -> Log.info (fun f -> f "%d -> %s" idx description)) connection_table;
+      loop () in
+    loop ()
 
   module Datagram = struct
     type address = Ipaddr.t * int
@@ -1004,11 +1019,6 @@ module Files = struct
       Log.err (fun f -> f "Starting to watch %s: %s" path (Uwt.err_name err));
       Error (`Msg (Uwt.strerror err))
 
-end
-
-module Time = struct
-  type 'a io = 'a Lwt.t
-  let sleep_ns x = Uwt.Timer.sleep (Duration.to_ms x)
 end
 
 module Dns = struct
