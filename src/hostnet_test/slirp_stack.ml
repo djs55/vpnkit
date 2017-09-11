@@ -109,6 +109,7 @@ module Client = struct
   type stack = {
     t: t;
     icmpv4: Icmpv41.t;
+    ipv4: Ipv41.t;
     netif: VMNET.t;
   }
 
@@ -127,7 +128,7 @@ module Client = struct
     } in
     connect cfg ethif arp ipv4 icmpv4 udp4 tcp4
     >>= fun t ->
-    Lwt.return { t; icmpv4 ; netif=interface }
+    Lwt.return { t; icmpv4 ; ipv4; netif=interface }
 end
 
 module DNS = Dns_resolver_mirage.Make(Host.Time)(Client)

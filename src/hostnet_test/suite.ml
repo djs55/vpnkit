@@ -238,6 +238,73 @@ let run' ?timeout t =
           t local_port x b)
     )
 
+let test_partial_connection () =
+  let t local_port _ stack =
+    (* query the number of active connections *)
+    let initial_active = Host.Sockets.get_num_connections () in
+    let send_syn () =
+      (* send a SYN to (Ipaddr.V4.localhost, local_port *)
+      let dst = Ipaddr.V4.localhost in
+      let seq = Tcp.Sequence.of_int 5 in (* arbitrary *)
+      let options = [] in
+      let window = 5840 in
+      let payload = Cstruct.create 0 in
+      let ip = stack.Client.ipv4 in
+      let header = {
+        Tcp.Tcp_packet.sequence = seq; ack_number = Tcp.Sequence.zero; window;
+        urg = false; ack = false; psh = false; rst = false; syn = true; fin = false;
+        options;
+        src_port = local_port; dst_port = local_port;
+      } in
+      let module IP = Client.Ipv41 in
+      let frame, header_len = IP.allocate_frame ip ~dst ~proto:`TCP in
+      let tcp_buf = Cstruct.shift frame header_len in
+      let pseudoheader = IP.pseudoheader ip ~dst ~proto:`TCP
+        (Tcp.Tcp_wire.sizeof_tcp + Tcp.Options.lenv options + Cstruct.len payload) in
+      match Tcp.Tcp_packet.Marshal.into_cstruct header tcp_buf ~pseudoheader ~payload with
+      | Result.Error s ->
+        Log.warn (fun f -> f "Error writing TCP packet header: %s" s);
+        Lwt.fail (Failure ("Tcp_packet.Marshal.into_cstruct: " ^ s))
+      | Result.Ok len ->
+        let frame = Cstruct.set_len frame (header_len + len) in
+        begin IP.write ip frame payload
+        >>= function
+        | Error e ->
+          Log.warn (fun f -> f "Error transmitting IP packet: %a" IP.pp_error e);
+          Lwt.fail (Failure "IP.write")
+        | Ok () ->
+          Log.info (fun f -> f "Transmitted SYN");
+          Lwt.return_unit
+        end in
+    (* Send a SYN until the number of connections increases *)
+    let rec loop () =
+      let current = Host.Sockets.get_num_connections () in
+      if current > initial_active
+      then Lwt.return_unit
+      else begin
+        send_syn ()
+        >>= fun () ->
+        Host.Time.sleep_ns (Duration.of_sec 1)
+        >>= fun () ->
+        loop ()
+      end in
+    loop ()
+    >>= fun () ->
+    (* The handshake will never be completed. Wait for the connection to be closed *)
+    let rec loop () =
+      let current = Host.Sockets.get_num_connections () in
+      if current <= initial_active
+      then Lwt.return_unit
+      else begin
+        Log.debug (fun f -> f "There are %d connections ( > initial number %d)" current initial_active);
+        Host.Time.sleep_ns (Duration.of_sec 1)
+        >>= fun () ->
+        loop ()
+      end in
+    loop ()
+  in
+  run' ~timeout:(Duration.of_sec 30) t
+
 let test_many_connections n () =
   let t local_port _ stack =
     (* Note that the stack will consume a small number of file
@@ -367,6 +434,9 @@ let test_tcp = [
 
   "TCP streaming",
   [ "1 TCP connection transferring 1 KiB", `Quick, test_stream_data 1 1024 ];
+
+  "TCP leaked SYN",
+  [ "Will a SYN flood leak file descriptors", `Quick, test_partial_connection ];
 
   (*
   "10 TCP connections each transferring 1 KiB", `Quick, test_stream_data 10 1024;
