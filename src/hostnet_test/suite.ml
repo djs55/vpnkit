@@ -427,6 +427,7 @@ let test_dns use_host =
   ]
 
 let test_tcp = [
+  (*
   "HTTP GET", [ "HTTP GET http://www.google.com/", `Quick, test_http_fetch ];
 
   "Max connections",
@@ -434,7 +435,7 @@ let test_tcp = [
 
   "TCP streaming",
   [ "1 TCP connection transferring 1 KiB", `Quick, test_stream_data 1 1024 ];
-
+*)
   "TCP leaked SYN",
   [ "Will a SYN flood leak file descriptors", `Quick, test_partial_connection ];
 
@@ -451,14 +452,18 @@ let test_tcp = [
   *)
 ]
 
-let tests =
+let _tests =
   Hosts_test.tests @ Forwarding.tests @ test_dhcp
   @ (test_dns true) @ (test_dns false)
   @ test_tcp @ Test_nat.tests @ Test_http.tests @ Test_http.Exclude.tests
   @ Test_half_close.tests @ Test_ping.tests
   @ Test_bridge.tests
 
-let scalability = [
+let _scalability = [
   "1026conns",
   [ "Test many connections", `Quick, test_many_connections (1024 + 2) ];
 ]
+
+let tests = test_tcp
+
+let scalability = []

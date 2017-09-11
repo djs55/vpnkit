@@ -226,6 +226,8 @@ let with_stack ?uuid ?preferred_ip f =
       Host.Sockets.Stream.Tcp.close flow >>= fun () ->
       failwith x
     | Ok client' ->
+      VMNET.start_capture client' "/tmp/foo.pcap"
+      >>= fun () ->
       Lwt.finalize (fun () ->
           Log.info (fun f -> f "Initialising client TCP/IP stack");
           Client.connect client' >>= fun client ->
