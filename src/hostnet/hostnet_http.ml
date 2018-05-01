@@ -241,7 +241,7 @@ module Make
     (* forward outgoing to ingoing *)
     let a_t flow ~incoming ~outgoing =
       let warn pp e =
-        Log.warn (fun f -> f "Unexpected exeption %a in proxy" pp e);
+        Log.warn (fun f -> f "a_t Unexpected exeption %a in proxy" pp e);
       in
       let rec loop () =
         (Outgoing.C.read_some outgoing >>= function
@@ -254,14 +254,17 @@ module Make
             | Error `Closed -> false
             | Error e       -> warn Incoming.C.pp_write_error e; false
         ) >>= fun continue ->
-        if continue then loop () else Tcp.close flow
+        if continue then loop () else begin
+          Log.info (fun f -> f "proxy_bytes: close");
+          Tcp.close flow
+        end
       in
       loop () in
 
     (* forward ingoing to outgoing *)
     let b_t remote ~incoming ~outgoing =
       let warn pp e =
-        Log.warn (fun f -> f "Unexpected exeption %a in proxy" pp e);
+        Log.warn (fun f -> f "b_t Unexpected exeption %a in proxy" pp e);
       in
       let rec loop () =
         (Incoming.C.read_some incoming >>= function
@@ -274,7 +277,10 @@ module Make
             | Error `Closed -> false
             | Error e       -> warn Outgoing.C.pp_write_error e; false
         ) >>= fun continue ->
-        if continue then loop () else Socket.Stream.Tcp.shutdown_write remote
+        if continue then loop () else begin
+          Log.info (fun f -> f "proxy_bytes: shutdown_write");
+          Socket.Stream.Tcp.shutdown_write remote
+        end
       in
       loop () in
     Lwt.join [
@@ -420,9 +426,11 @@ module Make
         (error_html "ERROR: connection refused" msg)
     ) res incoming
 
+  let tunnel_https_over_connect_counter = ref 0
   let tunnel_https_over_connect ~localhost_names ~localhost_ips ~dst proxy =
     let listeners _port =
-      Log.debug (fun f -> f "HTTPS TCP handshake complete");
+      incr tunnel_https_over_connect_counter;
+      Log.info (fun f -> f "+1 tunnel_https_over_connect: %d" !tunnel_https_over_connect_counter);
       let process flow =
         Lwt.finalize
           (fun () ->
@@ -480,7 +488,10 @@ module Make
                       let incoming = Incoming.C.create flow in
                       proxy_bytes ~incoming ~outgoing ~flow ~remote
                   ) (fun () -> Socket.Stream.Tcp.close remote)
-          ) (fun () -> Tcp.close flow)
+          ) (fun () ->
+          decr tunnel_https_over_connect_counter;
+          Log.info (fun f -> f "-1 tunnel_https_over_connect: %d" !tunnel_https_over_connect_counter);
+          Tcp.close flow)
       in Some { Tcp.process; keepalive }
     in
     Lwt.return listeners
@@ -647,12 +658,15 @@ module Make
         ) (fun () -> Socket.Stream.Tcp.close remote)
       end
 
+  let explicit_proxy_counter = ref 0
+
   (* A regular, non-transparent HTTP proxy implementation.
      If [proxy] is [None] then requests will be sent to origin servers;
      otherwise they will be sent to the upstream proxy. *)
   let explicit_proxy ~localhost_names ~localhost_ips proxy exclude () =
     let listeners _port =
-      Log.debug (fun f -> f "HTTP TCP handshake complete");
+      incr explicit_proxy_counter;
+      Log.info (fun f -> f "+1 explicit_proxy: %d" !explicit_proxy_counter);
       let process flow =
         Lwt.finalize (fun () ->
             let incoming = Incoming.C.create flow in
@@ -674,15 +688,21 @@ module Make
                   Log.debug (fun f -> f "HTTP session complete, closing connection");
                   Lwt.return_unit in
               loop ()
-          ) (fun () -> Tcp.close flow)
+          ) (fun () ->
+          decr explicit_proxy_counter;
+          Log.info (fun f -> f "-1 explicit_proxy: %d" !explicit_proxy_counter);
+          Tcp.close flow)
       in
       Some { Tcp.process; keepalive }
     in
     Lwt.return listeners
 
+  let transparent_http_counter = ref 0
+
   let transparent_http ~dst ~localhost_names ~localhost_ips proxy exclude =
     let listeners _port =
-      Log.debug (fun f -> f "HTTP TCP handshake complete");
+      incr transparent_http_counter;
+      Log.info (fun f -> f "+1 transparent_http: %d" !transparent_http_counter);
       let process flow =
         Lwt.finalize (fun () ->
           let incoming = Incoming.C.create flow in
@@ -713,7 +733,11 @@ module Make
                 Log.debug (fun f -> f "HTTP session complete, closing connection");
                 Lwt.return_unit in
             loop ()
-          ) (fun () -> Tcp.close flow)
+          ) (fun () ->
+          decr transparent_http_counter;
+          Log.info (fun f -> f "-1 transparent_http: %d" !transparent_http_counter);
+
+          Tcp.close flow)
       in Some { Tcp.process; keepalive }
     in
     Lwt.return listeners
