@@ -4,7 +4,7 @@ ifeq ($(OS),Windows_NT)
   OPAM_REPO?=repo/win32
   OPAMROOT?=$(shell cygpath -w "$(REPO_ROOT)/_build/opam")
 else
-  OPAM_COMP?=4.06.0
+  OPAM_COMP?=4.06.0+spacetime
   OPAM_REPO?=repo/darwin
   OPAMROOT?=$(REPO_ROOT)/_build/opam
 endif
