@@ -15,6 +15,12 @@ let mk = Arg.enum [
 
 let setup log_destination level =
   Logs.set_level level;
+
+  List.iter (fun src ->
+    if Logs.Src.name src = "pcb"
+    then Logs.Src.set_level src (Some Debug)
+  ) (Logs.Src.list ());
+
   match log_destination with
   | Quiet    -> Logs.set_reporter (Logs_fmt.reporter ())
   | Eventlog ->
