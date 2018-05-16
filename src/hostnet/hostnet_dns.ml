@@ -213,6 +213,7 @@ struct
     local_ip: Ipaddr.t;
     builtin_names: (Dns.Name.t * Ipaddr.t) list;
     resolver: resolver;
+    enable_tcp_keepalives: bool;
   }
 
   let recorder = ref None
@@ -291,7 +292,7 @@ struct
     | None ->
       Random.int bound
 
-  let create ~local_address ~builtin_names =
+  let create ~local_address ~builtin_names ~enable_tcp_keepalives =
     let local_ip = local_address.Dns_forward.Config.Address.ip in
     Log.info (fun f ->
       let suffix = match builtin_names with
@@ -321,10 +322,11 @@ struct
       Dns_tcp_resolver.create ~gen_transaction_id ~message_cb config clock
       >>= fun dns_tcp_resolver ->
       Lwt.return { local_ip; builtin_names;
-                   resolver = Upstream { dns_tcp_resolver; dns_udp_resolver } }
+                   resolver = Upstream { dns_tcp_resolver; dns_udp_resolver };
+                   enable_tcp_keepalives }
     | `Host ->
       Log.info (fun f -> f "Will use the host's DNS resolver");
-      Lwt.return { local_ip; builtin_names; resolver = Host }
+      Lwt.return { local_ip; builtin_names; resolver = Host; enable_tcp_keepalives }
 
   let answer t is_tcp buf =
     let open Dns.Packet in
@@ -429,11 +431,13 @@ struct
           close
         ]
       in
-      let keepalive = Some {
-        Mirage_protocols.Keepalive.after = Duration.of_sec 1;
-        interval = Duration.of_sec 1;
-        probes = 10
-      } in
+      let keepalive =
+        if t.enable_tcp_keepalives
+        then Some {
+          Mirage_protocols.Keepalive.after = Duration.of_sec 1;
+          interval = Duration.of_sec 1;
+          probes = 10
+        } else None in
       Some { Tcp.process; keepalive }
     in
     Lwt.return listeners

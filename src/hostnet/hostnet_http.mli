@@ -25,6 +25,7 @@ sig
 
   val create: ?http:string -> ?https:string -> ?exclude:string
     -> ?transparent_http_ports:int list -> ?transparent_https_ports:int list
+    -> enable_tcp_keepalives:bool
     -> unit ->
     (t, [`Msg of string]) result Lwt.t
   (** Create a transparent HTTP forwarding instance which forwards

@@ -152,6 +152,7 @@ module Make
     exclude: Exclude.t;
     transparent_http_ports: int list;
     transparent_https_ports: int list;
+    enable_tcp_keepalives: bool;
   }
 
   let resolve_ip name_or_ip =
@@ -213,11 +214,18 @@ module Make
 
   let to_string t = Ezjsonm.to_string ~minify:false @@ to_json t
 
-  let create ?http ?https ?exclude ?(transparent_http_ports=[ 80 ]) ?(transparent_https_ports=[ 443 ]) () =
+  let create ?http ?https ?exclude ?(transparent_http_ports=[ 80 ]) ?(transparent_https_ports=[ 443 ]) ~enable_tcp_keepalives () =
     let http = match http with None -> None | Some x -> proxy_of_string x in
     let https = match https with None -> None | Some x -> proxy_of_string x in
     let exclude = match exclude with None -> [] | Some x -> Exclude.of_string x in
-    let t = { http; https; exclude; transparent_http_ports; transparent_https_ports } in
+    let keepalive =
+      if enable_tcp_keepalives
+      then Some {
+        Mirage_protocols.Keepalive.after = Duration.of_sec 1;
+        interval = Duration.of_sec 1;
+        probes = 10
+      } else None in
+    let t = { http; https; exclude; transparent_http_ports; transparent_https_ports; keepalive } in
     Log.info (fun f -> f "HTTP proxy settings changed to: %s" (to_string t));
     Lwt.return (Ok t)
 
@@ -281,12 +289,6 @@ module Make
       a_t flow ~incoming ~outgoing;
       b_t remote ~incoming ~outgoing
     ]
-
-  let keepalive = Some {
-    Mirage_protocols.Keepalive.after = Duration.of_sec 1;
-    interval = Duration.of_sec 1;
-    probes = 10
-  }
 
   let rec proxy_body_request ~reader ~writer =
     let open Cohttp.Transfer in
@@ -481,7 +483,7 @@ module Make
                       proxy_bytes ~incoming ~outgoing ~flow ~remote
                   ) (fun () -> Socket.Stream.Tcp.close remote)
           ) (fun () -> Tcp.close flow)
-      in Some { Tcp.process; keepalive }
+      in Some { Tcp.process; keepalive = t.keepalive}
     in
     Lwt.return listeners
 
@@ -676,7 +678,7 @@ module Make
               loop ()
           ) (fun () -> Tcp.close flow)
       in
-      Some { Tcp.process; keepalive }
+      Some { Tcp.process; keepalive = t.keepalive }
     in
     Lwt.return listeners
 
@@ -714,7 +716,7 @@ module Make
                 Lwt.return_unit in
             loop ()
           ) (fun () -> Tcp.close flow)
-      in Some { Tcp.process; keepalive }
+      in Some { Tcp.process; keepalive = t.keepalive}
     in
     Lwt.return listeners
 

@@ -237,6 +237,7 @@ struct
       udp4:                     Stack_udp.t;
       tcp4:                     Stack_tcp.t;
       clock:                    Clock.t;
+      enable_tcp_keepalives:    bool;
       mutable pending:          Tcp.Id.Set.t;
       mutable last_active_time: float;
       (* Tasks that will be signalled if the endpoint is destroyed *)
@@ -247,7 +248,7 @@ struct
     let touch t =
       t.last_active_time <- Unix.gettimeofday ()
 
-    let create recorder switch arp_table ip mtu clock =
+    let create recorder switch arp_table ip mtu clock enable_tcp_keepalives =
       let netif = Switch.port switch ip in
       Stack_ethif.connect ~mtu netif >>= fun ethif ->
       Stack_arpv4.connect ~table:arp_table ethif |>fun arp ->
@@ -266,7 +267,7 @@ struct
       let on_destroy = Tcp.Id.Map.empty in
       let tcp_stack =
         { recorder; netif; ethif; arp; ipv4; icmpv4; udp4; tcp4; pending;
-          last_active_time; clock; on_destroy }
+          last_active_time; clock; enable_tcp_keepalives; on_destroy }
       in
       Lwt.return tcp_stack
 
@@ -365,11 +366,13 @@ struct
                       Host.Sockets.Stream.Tcp.close socket
                     )
               in
-              let keepalive = Some {
-                Mirage_protocols.Keepalive.after = Duration.of_sec 1;
-                interval = Duration.of_sec 1;
-                probes = 10
-              } in
+              let keepalive =
+                if t.enable_tcp_keepalives
+                then Some {
+                  Mirage_protocols.Keepalive.after = Duration.of_sec 1;
+                  interval = Duration.of_sec 1;
+                  probes = 10
+                } else None in
               Some { Stack_tcp.process; keepalive }
             in
             Lwt.return listeners
@@ -975,7 +978,7 @@ struct
            if IPMap.mem ip t.endpoints
            then Lwt.return (Ok (IPMap.find ip t.endpoints))
            else begin
-             Endpoint.create interface switch local_arp_table ip c.Configuration.mtu clock
+             Endpoint.create interface switch local_arp_table ip c.Configuration.mtu clock c.Configuration.enable_tcp_keepalives
              >|= fun endpoint ->
              t.endpoints <- IPMap.add ip endpoint t.endpoints;
              Ok endpoint

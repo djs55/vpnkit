@@ -403,7 +403,7 @@ let hvsock_addr_of_uri ~default_serviceid uri =
       max_connections vsock_path db_path db_branch dns http hosts host_names gateway_names
       vm_names listen_backlog port_max_idle_time debug
       server_macaddr domain allowed_bind_addresses gateway_ip host_ip lowest_ip highest_ip
-      dhcp_json_path mtu udpv4_forwards gc_compact log_destination
+      dhcp_json_path mtu udpv4_forwards gc_compact enable_tcp_keepalives log_destination
     =
     let level =
       let env_debug =
@@ -462,6 +462,7 @@ let hvsock_addr_of_uri ~default_serviceid uri =
       dhcp_json_path;
       mtu;
       udpv4_forwards;
+      enable_tcp_keepalives;
     } in
     match socket_url with
       | None ->
@@ -725,6 +726,14 @@ let gc_compact =
   in
   Arg.(value & opt (some int) None doc)
 
+let enable_tcp_keepalives =
+  let doc =
+    Arg.info ~doc:
+      "Enable TCP keepalives on all internal connections"
+      [ "enable-tcp-keepalives" ]
+  in
+  Arg.(value & flag & info [ "enable-tcp-keepalives" ] ~doc)
+
 let command =
   let doc = "proxy TCP/IP connections from an ethernet link via sockets" in
   let man =
@@ -738,7 +747,7 @@ let command =
         $ host_names $ gateway_names $ vm_names $ listen_backlog $ port_max_idle_time $ debug
         $ server_macaddr $ domain $ allowed_bind_addresses $ gateway_ip $ host_ip
         $ lowest_ip $ highest_ip $ dhcp_json_path $ mtu $ udpv4_forwards
-        $ gc_compact $ Logging.log_destination),
+        $ gc_compact $ enable_tcp_keepalives $ Logging.log_destination),
   Term.info (Filename.basename Sys.argv.(0)) ~version:"%%VERSION%%" ~doc ~man
 
 let () =
