@@ -12,3 +12,4 @@ ENTRYPOINT []
 CMD []
 WORKDIR /
 COPY --from=mirror /go/bin/vpnkit-userland-proxy /usr/bin/vpnkit-userland-proxy
+COPY --from=mirror /go/bin/vpnkit-userland-proxy /usr/bin/vpnkit-expose-port
