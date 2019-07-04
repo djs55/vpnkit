@@ -37,6 +37,7 @@ type stream struct {
 
 func (s *stream) Run() {
 	for {
+		log.Printf("%s: calling accept", s.dest.String())
 		src, err := s.l.accept()
 		if err != nil {
 			log.Printf("Stopping accepting connections on %s", s.port.String())
