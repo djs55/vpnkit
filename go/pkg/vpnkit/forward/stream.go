@@ -42,6 +42,7 @@ func (s *stream) Run() {
 			log.Printf("Stopping accepting connections on %s", s.port.String())
 			return
 		}
+		log.Printf("%s: accepted", s.dest.String())
 		mux := s.ctrl.Mux()
 		dest, err := mux.Dial(*s.dest)
 		if err != nil {
@@ -51,10 +52,13 @@ func (s *stream) Run() {
 			}
 			continue // Multiplexer could be disconnected
 		}
+		log.Printf("%s: proxying ", s.dest.String())
 		go func() {
 			if err := libproxy.ProxyStream(src, dest, s.quit); err != nil {
 				log.Printf("unable to proxy on %s: %s", s.port.String(), err)
 			}
+			log.Printf("%s: closing", s.dest.String())
+
 			if err := src.Close(); err != nil {
 				log.Printf("unable to Close on %s: %s", s.port.String(), err)
 			}

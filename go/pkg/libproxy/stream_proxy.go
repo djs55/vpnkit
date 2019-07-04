@@ -46,6 +46,7 @@ func ProxyStream(client, backend Conn, quit <-chan struct{}) error {
 		}
 	}
 	backend.Close()
+	log.Printf("ProxyStream copied %d bytes", transferred)
 	return nil
 }
 

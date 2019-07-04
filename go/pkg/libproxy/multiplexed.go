@@ -359,6 +359,7 @@ func (m *multiplexer) Close() error {
 }
 
 func (m *multiplexer) appendEvent(e *event) {
+	log.Printf("%s", e.String())
 	m.eventsM.Lock()
 	defer m.eventsM.Unlock()
 	m.events.Value = e
