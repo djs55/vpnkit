@@ -1,0 +1,20 @@
+# Since we can't cross-compile macOS OCaml in a container, we simply
+# package artefacts built by CI.
+
+FROM alpine:3.13 AS download
+
+RUN apk add curl tar
+
+ARG CIRCLECI_TOKEN
+
+RUN curl -L https://1575-58395340-gh.circle-artifacts.com/0/COMMIT?token=${CIRCLECI_TOKEN} > COMMIT
+RUN curl -L https://1575-58395340-gh.circle-artifacts.com/0/OSS-LICENSES?token=${CIRCLECI_TOKEN} > OSS-LICENSES
+RUN curl -L https://1575-58395340-gh.circle-artifacts.com/0/vpnkit.tgz?token=${CIRCLECI_TOKEN} > vpnkit.tgz
+
+RUN tar -xvzf vpnkit.tgz
+
+FROM scratch
+
+COPY --from=download /COMMIT COMMIT
+COPY --from=download /OSS-LICENSES OSS-LICENSES
+COPY --from=download /Contents/Resources/bin/vpnkit /vpnkit
