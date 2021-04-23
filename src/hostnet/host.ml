@@ -1086,20 +1086,23 @@ end
 
 module Dns = struct
   (* FIXME: error handling completely missing *)
-  let getaddrinfo host domain =
-    let opts = [ Unix.AI_FAMILY domain ] in
-    let service = "" in
-    Uwt.Dns.getaddrinfo ~host ~service opts
-    >>= function
+  let getaddrinfo node family =
+    let t, u = Luv_lwt.task () in
+    Luv.DNS.getaddrinfo ~family ~node () (Luv_lwt.wakeup_later u);
+    t >>= function
     | Error _ ->
       Lwt.return []
     | Ok x ->
       Lwt.return @@
-      List.fold_left (fun acc addr_info -> match addr_info.Uwt.Dns.ai_addr with
-        | Unix.ADDR_INET(ip, _) ->
-          begin match Ipaddr.of_string @@ Unix.string_of_inet_addr ip with
-          | Some ip -> ip :: acc
+      List.fold_left (fun acc addr_info -> match addr_info.Luv.DNS.Addr_info.family with
+        |  `INET ->
+          begin match Luv.Sockaddr.to_string addr_info.Luv.DNS.Addr_info.addr with
           | None -> acc
+          | Some ip ->
+            begin match Ipaddr.of_string ip with
+            | Some ip -> ip :: acc
+            | None -> acc
+            end
           end
         | _ -> acc
         ) [] x
@@ -1113,11 +1116,11 @@ module Dns = struct
       Log.debug (fun f -> f "DNS lookup of localhost.local: return NXDomain");
       Lwt.return (q_name, [])
     | { q_class = Q_IN; q_type = Q_A; q_name; _ } ->
-      getaddrinfo (Dns.Name.to_string q_name) Unix.PF_INET
+      getaddrinfo (Dns.Name.to_string q_name) `INET
       >>= fun ips ->
       Lwt.return (q_name, ips)
     | { q_class = Q_IN; q_type = Q_AAAA; q_name; _ } ->
-      getaddrinfo (Dns.Name.to_string q_name) Unix.PF_INET6
+      getaddrinfo (Dns.Name.to_string q_name) `INET6
       >>= fun ips ->
       Lwt.return (q_name, ips)
     | _ ->
