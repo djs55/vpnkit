@@ -1081,7 +1081,11 @@ end
 
 module Time = struct
   type 'a io = 'a Lwt.t
-  let sleep_ns x = Uwt.Timer.sleep (Duration.to_ms x)
+  let sleep_ns ns =
+      let timer = Luv.Timer.init () |> Result.get_ok in
+      let t, u = Luv_lwt.task () in
+      ignore (Luv.Timer.start timer (Duration.to_ms ns) (Luv_lwt.wakeup_later u));
+      t
 end
 
 module Dns = struct
