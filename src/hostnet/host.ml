@@ -1032,30 +1032,39 @@ end
 
 module Files = struct
   let read_file path =
-    let open Lwt.Infix in
-    Lwt.catch
-      (fun () ->
-         Uwt.Fs.openfile ~mode:[ Uwt.Fs_types.O_RDONLY ] path
-         >>= fun file ->
-         let buffer = Buffer.create 128 in
-         let frag = Bytes.make 1024 ' ' in
-         Lwt.finalize
-           (fun () ->
-              let rec loop () =
-                Uwt.Fs.read file ~buf:frag
-                >>= function
-                | 0 ->
-                  Lwt_result.return (Buffer.contents buffer)
-                | n ->
-                  Buffer.add_subbytes buffer frag 0 n;
-                  loop () in
-              loop ()
-           ) (fun () ->
-               Uwt.Fs.close file
-             )
-      ) (fun e ->
-          Lwt_result.fail (`Msg (Fmt.strf "reading %s: %a" path Fmt.exn e))
-        )
+    let t, u = Luv_lwt.task () in
+
+    let close h = Luv.File.close h
+      (function
+      | Ok () -> ()
+      | Error err -> Log.err (fun f -> f "closing: %s" (Luv.Error.err_name err))) in
+
+    (* Caller wants a string *)
+    let buf = Buffer.create 4096 in
+    let frag = Luv.Buffer.create 4096 in
+    let rec loop h =
+      Luv.File.read h [ frag ]
+        (function
+          | Ok n ->
+            if n = Unsigned.Size_t.zero then begin
+              close h;
+              Luv_lwt.wakeup_later u (Ok (Buffer.contents buf))
+            end else begin
+              Luv.Buffer.(sub frag ~offset:0 ~length:(Unsigned.Size_t.to_int n) |> to_bytes) |> Buffer.add_bytes buf;
+              loop h
+            end
+          | Error err ->
+            close h;
+            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+        ) in
+    Luv.File.open_ path [ `RDONLY ]
+      (function
+      | Error err ->
+        Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+      | Ok h ->
+        loop h
+      );
+    t
 
   type watch = {
     h: [ `FS_event ] Luv.Handle.t;
