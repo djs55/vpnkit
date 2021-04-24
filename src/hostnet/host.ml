@@ -1057,25 +1057,26 @@ module Files = struct
           Lwt_result.fail (`Msg (Fmt.strf "reading %s: %a" path Fmt.exn e))
         )
 
-  (* NOTE(djs55): Fs_event didn't work for me on MacOS *)
-  type watch = Uwt.Fs_poll.t
+  type watch = {
+    h: [ `FS_event ] Luv.Handle.t;
+    n: int;
+  }
 
-  let unwatch w = Uwt.Fs_poll.close_noerr w
+  let unwatch w =
+    Luv.FS_event.stop w.h |> Result.get_ok;
+    Lwt_unix.stop_notification w.n
 
   let watch_file path callback =
-    let cb _h res = match res with
-    | Ok _ ->
-      callback ()
-    | Error err ->
-      Log.err (fun f -> f "While watching %s: %s" path (Uwt.err_name err));
-      () in
-    match Uwt.Fs_poll.start path 5000 ~cb with
-    | Ok handle ->
-      callback ();
-      Ok handle
-    | Error err ->
-      Log.err (fun f -> f "Starting to watch %s: %s" path (Uwt.err_name err));
-      Error (`Msg (Uwt.strerror err))
+    let h = Luv.FS_event.init () |> Result.get_ok in
+    let n = Lwt_unix.make_notification callback in
+
+    Luv.FS_event.start h path
+      (function
+      | Ok _ ->
+        Lwt_unix.send_notification n
+      | Error err ->
+        Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
+    Ok { h; n }
 
 end
 
