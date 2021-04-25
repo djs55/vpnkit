@@ -797,233 +797,197 @@ module Sockets = struct
       type flow = {
         idx: int;
         description: string;
-        fd: Uwt.Pipe.t;
-        read_buffer_size: int;
-        mutable read_buffer: Cstruct.t;
+        fd: Luv.Pipe.t;
         mutable closed: bool;
       }
 
       let of_fd
-          ~idx ?(read_buffer_size = default_read_buffer_size) ~description fd
+          ~idx ?read_buffer_size:_ ~description fd
         =
-        let read_buffer = Cstruct.create read_buffer_size in
         let closed = false in
-        { idx; description; fd; read_buffer; read_buffer_size; closed }
+        { idx; description; fd; closed }
 
-      let unsafe_get_raw_fd t =
-        let fd = Uwt.Pipe.fileno_exn t.fd in
-        Unix.clear_nonblock fd;
-        fd
+      let unsafe_get_raw_fd _t =
+        failwith "unsafe_get_raw_fd unimplemented"
 
-      let connect ?(read_buffer_size = default_read_buffer_size) path =
+      let connect ?read_buffer_size:_ path =
         let description = "unix:" ^ path in
         register_connection description
         >>= fun idx ->
-        let fd = Uwt.Pipe.init () in
-        Lwt.catch
-          (fun () ->
-             Uwt.Pipe.connect fd ~path
-             >>= fun () ->
-             let description = path in
-             Lwt_result.return (of_fd ~idx ~read_buffer_size ~description fd)
-          ) (fun e ->
-              deregister_connection idx;
-              Lwt.fail e
-            )
+        begin match Luv.Pipe.init () with
+        | Error err ->
+          let msg = Fmt.strf "Pipe.connect %s: %s" path (Luv.Error.strerror err) in
+          Log.err (fun f -> f "%s" msg);
+          Lwt.fail_with msg
+        | Ok fd ->
+          let t, u = Luv_lwt.task () in
+          Luv.Pipe.connect fd path begin function
+          | Error err ->
+            deregister_connection idx;
+            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+          | Ok () -> Luv_lwt.wakeup_later u (Ok (of_fd ~description ~idx fd))
+          end;
+          t
+        end
 
       let shutdown_read _ =
         Lwt.return ()
 
-      let shutdown_write { description; fd; closed; _ } =
-        try
-          if not closed then Uwt.Pipe.shutdown fd else Lwt.return ()
-        with
-        | Unix.Unix_error(Unix.ENOTCONN, _, _) -> Lwt.return ()
-        | e ->
-          Log.err (fun f ->
-              f "Socket.Pipe.shutdown_write %s: caught %a returning Eof"
-                description Fmt.exn e);
-          Lwt.return ()
+      let shutdown_write { fd; closed; _ } =
+        if not closed then Luv.Stream.shutdown fd begin function
+          | Error err -> Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err))
+          | Ok () -> ()
+        end;
+        Lwt.return_unit
 
       let read_into t buf =
-        let rec loop buf =
-          if Cstruct.len buf = 0
-          then Lwt.return (Ok (`Data ()))
-          else
-            Uwt.Pipe.read_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-              ~buf:buf.Cstruct.buffer
-            >>= function
-            | 0 -> Lwt.return (Ok `Eof)
-            | n -> loop (Cstruct.shift buf n)
-        in
-        loop buf
+        let buffer = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
+        let result, u = Luv_lwt.task () in
+        Luv.Stream.read_start ~allocate:(fun _suggested -> buffer) t.fd begin function
+          | Ok b ->
+            let n = Luv.Buffer.size buffer - (Luv.Buffer.size b) in
+            if n == 0 then begin
+              match Luv.Stream.read_stop t.fd with
+              | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data ()))
+              | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+            end
+          | Error err ->
+            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+          end;
+        result
 
       let read t =
-        (if Cstruct.len t.read_buffer = 0
-         then t.read_buffer <- Cstruct.create t.read_buffer_size);
-        Lwt.catch (fun () ->
-            Uwt.Pipe.read_ba ~pos:t.read_buffer.Cstruct.off
-              ~len:t.read_buffer.Cstruct.len t.fd
-              ~buf:t.read_buffer.Cstruct.buffer
-            >>= function
-            | 0 -> Lwt.return (Ok `Eof)
-            | n ->
-              let results = Cstruct.sub t.read_buffer 0 n in
-              t.read_buffer <- Cstruct.shift t.read_buffer n;
-              Lwt.return (Ok (`Data results))
-          ) (fun e ->
-            Log.err (fun f ->
-                f "Socket.Pipe.read %s: caught %a returning Eof"
-                  t.description Fmt.exn e);
-            Lwt.return (Ok `Eof)
-          )
-
-      let write t buf =
-        Lwt.catch (fun () ->
-            Uwt.Pipe.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-              ~buf:buf.Cstruct.buffer
-            >|= fun () ->
-            Ok ()
-          ) (function
-          | Unix.Unix_error(Unix.EPIPE, _, _) ->
-            (* other end has closed, this is normal *)
-            Lwt.return (Error `Closed)
-          | e ->
-            (* Unexpected error *)
-            Log.err (fun f ->
-                f "Socket.Pipe.write %s: caught %a returning Eof"
-                  t.description Fmt.exn e);
-            Lwt.return (Error `Closed)
-          )
+        let result, u = Luv_lwt.task () in
+        Luv.Stream.read_start t.fd begin function
+        | Ok buf ->
+          begin match Luv.Stream.read_stop t.fd with
+          | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data (Cstruct.of_bigarray buf)))
+          | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+          end
+        | Error err ->
+          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+        end;
+        result
 
       let writev t bufs =
-        Lwt.catch (fun () ->
-            let rec loop = function
-            | [] -> Lwt.return (Ok ())
-            | buf :: bufs ->
-              Uwt.Pipe.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-                ~buf:buf.Cstruct.buffer
-              >>= fun () ->
-              loop bufs
-            in
-            loop bufs
-          ) (fun e ->
-            Log.err (fun f ->
-                f "Socket.Pipe.writev %s: caught %a returning Eof"
-                  t.description Fmt.exn e);
-            Lwt.return (Error `Closed)
-          )
+        let buffers = List.map (fun buf -> Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len) bufs in
+        let result, u = Luv_lwt.task () in
+        let rec loop buffers =
+          if Luv.Buffer.total_size buffers == 0
+          then Luv_lwt.wakeup_later u (Ok ())
+          else Luv.Stream.write t.fd buffers begin fun r n -> match r with
+          | Error err ->
+            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+          | Ok () ->
+            loop (Luv.Buffer.drop buffers n)
+          end in
+        loop buffers;
+        result
+
+      let write t buf = writev t [ buf ]
 
       let close t =
         if not t.closed then begin
           t.closed <- true;
-          log_exception_continue "Unix.close Uwt.Pipe.close_wait"
-            (fun () -> Uwt.Pipe.close_wait t.fd)
-          >|= fun () ->
-          deregister_connection t.idx
-        end else Lwt.return ()
+          Luv.Handle.close t.fd ignore;
+          deregister_connection t.idx;
+        end;
+        Lwt.return_unit
 
       type server = {
         idx: int;
-        fd: Uwt.Pipe.t;
+        fd: Luv.Pipe.t;
         mutable closed: bool;
         mutable disable_connection_tracking: bool;
       }
 
       let bind ?(description="") path =
-        Lwt.catch (fun () -> Uwt.Fs.unlink path) (fun _ -> Lwt.return ())
+        Lwt.catch (fun () -> Lwt_unix.unlink path) (fun _ -> Lwt.return ())
         >>= fun () ->
         let description = Fmt.strf "unix:%s %s" path description in
         register_connection description >>= fun idx ->
-        let fd = Uwt.Pipe.init () in
-        Lwt.catch (fun () ->
-            Uwt.Pipe.bind_exn fd ~path;
+        match Luv.Pipe.init () with
+        | Error err -> Lwt.fail (Luv_lwt.Error err)
+        | Ok fd ->
+          begin match Luv.Pipe.bind fd path with
+          | Ok () ->
             Lwt.return { idx; fd; closed = false;
-                         disable_connection_tracking = false }
-          ) (fun e ->
+                        disable_connection_tracking = false }
+          | Error err ->
             deregister_connection idx;
-            Lwt.fail e
-          )
+            Lwt.fail (Luv_lwt.Error err)
+          end
 
-      let getsockname server = match Uwt.Pipe.getsockname server.fd with
-      | Uwt.Ok path -> path
+      let getsockname server = match Luv.Pipe.getsockname server.fd with
+      | Ok path -> path
       | _ -> invalid_arg "Unix.sockname passed a non-Unix socket"
 
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
+      let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
+
       let listen ({ fd; _ } as server') cb =
-        let cb server x =
-          try
-            if Uwt.Int_result.is_error x then
-              Log.err (fun f ->
-                  f "Uwt.Pipe.listen callback failed with: %s"
-                    (Uwt.strerror @@ Uwt.Int_result.to_error x))
-            else
-              let client = Uwt.Pipe.init () in
-              let t = Uwt.Pipe.accept_raw ~server ~client in
-              if Uwt.Int_result.is_error t then begin
-                Log.err (fun f ->
-                    f "Uwt.Pipe.accept_raw failed with: %s"
-                      (Uwt.strerror @@ Uwt.Int_result.to_error t))
-              end else begin
-                Lwt.async (fun () ->
-                    Lwt.catch (fun () ->
-                        let description = "unix:" ^ getsockname server' in
-                        (if server'.disable_connection_tracking
-                         then Lwt.return @@
-                           register_connection_no_limit description
-                         else register_connection description )
-                        >|= fun idx ->
-                        Some (of_fd ~idx ~description client)
-                      ) (fun _e ->
-                        log_exception_continue "Unix.listen Uwt.Pipe.close_wait"
-                          (fun () -> Uwt.Pipe.close_wait client)
-                        >>= fun () ->
-                        Lwt.return_none
-                      )
-                    >>= function
-                    | None -> Lwt.return_unit
-                    | Some flow ->
-                      Lwt.finalize (fun () ->
-                          log_exception_continue "Pipe.listen"
-                            (fun () -> cb flow)
-                        ) (fun () -> close flow )
-                  )
-              end
-          with e ->
-            Log.err (fun f -> f "Uwt.Pipe.listen callback raised: %a" Fmt.exn e)
-        in
-        let listen_result = Uwt.Pipe.listen fd ~max:(!Utils.somaxconn) ~cb in
-        if Uwt.Int_result.is_error listen_result
-        then Log.err (fun f ->
-            f "Uwt.Pipe.listen failed with: %s"
-              (Uwt.strerror @@ Uwt.Int_result.to_error listen_result))
+        let handle_connection client () =
+          let description = "unix:" ^ getsockname server' in
+          (if server'.disable_connection_tracking
+           then Lwt.return @@
+             register_connection_no_limit description
+           else register_connection description )
+          >>= fun idx ->
+          let flow = of_fd ~idx ~description client in
+          Lwt.finalize (fun () ->
+            log_exception_continue "Pipe.listen"
+              (fun () -> cb flow)
+          ) (fun () -> close flow ) in
+
+        Luv.Stream.listen fd begin function
+        | Error err -> Log.err (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
+        | Ok () ->
+          let rec accept_forever () =
+            match Luv.Pipe.init () with
+            | Error err -> Log.err (fun f -> f "Pipe.init: %s"  (Luv.Error.strerror err))
+            | Ok client ->
+              begin match Luv.Stream.accept ~server:fd ~client with
+              | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
+              | Ok () ->
+                Luv_lwt.push accept_queue (handle_connection, client);
+                accept_forever ()
+              end in
+          accept_forever ()
+        end
 
       let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
-        match Uwt.Pipe.openpipe fd with
-        | Uwt.Ok fd ->
-          let description = match Uwt.Pipe.getsockname fd with
-          | Uwt.Ok path -> "unix:" ^ path
-          | Uwt.Error error -> "getsockname failed: " ^ (Uwt.strerror error)
-          in
-          let idx = register_connection_no_limit description in
-          { idx; fd; closed = false; disable_connection_tracking = false }
-        | Uwt.Error error ->
+        (* FIXME: this is Unix-only. It would be better to pass an fd over a pipe instead. *)
+        let os_fd : Luv.Os_fd.Fd.t = Obj.magic fd in
+        let error err =
           let msg =
             Fmt.strf "Socket.Pipe.of_bound_fd (read_buffer_size=%d) failed \
-                      with %s" read_buffer_size (Uwt.strerror error)
-          in
+                      with %s" read_buffer_size (Luv.Error.strerror err) in
           Log.err (fun f -> f "%s" msg);
-          failwith msg
+          failwith msg in
+        match Luv.File.open_osfhandle os_fd with
+        | Error err -> error err
+        | Ok file ->
+          let fd = Luv.Pipe.init () |> Result.get_ok in
+          begin match Luv.Pipe.open_ fd file with
+          | Error err -> error err
+          | Ok () ->
+            let description = match Luv.Pipe.getsockname fd with
+              | Ok path -> "unix:" ^ path
+              | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
+              let idx = register_connection_no_limit description in
+              { idx; fd; closed = false; disable_connection_tracking = false }
+          end
 
       let shutdown server =
         if not server.closed then begin
           server.closed <- true;
-          log_exception_continue "Unix.shutdown Uwt.Pipe.close_wait"
-            (fun () -> Uwt.Pipe.close_wait server.fd)
-          >|= fun () ->
-          deregister_connection server.idx
+          let t, u = Luv_lwt.task () in
+          Luv.Handle.close server.fd (Luv_lwt.wakeup_later u);
+          t >>= fun () ->
+          deregister_connection server.idx;
+          Lwt.return_unit
         end else
           Lwt.return_unit
     end

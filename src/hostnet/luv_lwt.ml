@@ -1,38 +1,42 @@
 
-type queue = {
-  (* Note we have to wake the Lwt threads with a unit. *)
-  pending: unit Lwt.u Queue.t;
+type 'a queue = {
+  (* Pending jobs to be run in an Lwt-safe context. *)
+  pending: 'a Queue.t;
+  (* Run a job *)
+  run: 'a -> unit;
   mutable notification: int;
   m: Mutex.t;
 }
 
 let flush queue () =
-  (* Called on the Lwt thread to wakeup a batch of blocked threads. *)
+  (* Called on the Lwt thread to trigger a bunch of jobs *)
   Mutex.lock queue.m;
-  Queue.iter (fun u -> Lwt.wakeup_later u ()) queue.pending;
+  Queue.iter queue.run queue.pending;
   Queue.clear queue.pending;
   Mutex.unlock queue.m
 
-let unit_wakeup_later queue u =
-  (* Called on an arbitrary libuv callback thread to wakeup an Lwt task. *)
+let push queue x =
+  (* Called on an arbitrary libuv callback to queue a job for Lwt *)
   Mutex.lock queue.m;
   if Queue.is_empty queue.pending then begin
       Lwt_unix.send_notification queue.notification;
   end;
-  Queue.push u queue.pending;
+  Queue.push x queue.pending;
   Mutex.unlock queue.m
 
-let make_wakeup_queue () =
+let make_queue run =
   let queue = {
-    pending = Queue.create();
+    pending = Queue.create ();
+    run = run;
     notification = 0; (* initialised below *)
     m = Mutex.create();
   } in
   queue.notification <- Lwt_unix.make_notification (flush queue);
   queue
 
-let unit_wakeup_later = unit_wakeup_later (make_wakeup_queue ())
 
+let unit_wakeup_later = make_queue (fun x -> Lwt.wakeup_later x ())
+ 
 (* Wrap the result value here. *)
 type 'a task = {
   result: 'a option ref;
@@ -51,4 +55,6 @@ let task () =
 
 let wakeup_later u x =
   u.result := Some x;
-  unit_wakeup_later u.u
+  push unit_wakeup_later u.u
+
+exception Error of Luv.Error.t
