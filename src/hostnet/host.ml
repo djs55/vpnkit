@@ -1,7 +1,7 @@
 open Lwt.Infix
 
 let src =
-  let src = Logs.Src.create "Uwt" ~doc:"Host interface based on Uwt" in
+  let src = Logs.Src.create "Luv" ~doc:"Host interface based on Luv" in
   Logs.Src.set_level src (Some Logs.Info);
   src
 
@@ -20,8 +20,15 @@ let log_exception_continue description f =
        Lwt.return ()
     )
 
-let make_sockaddr (ip, port) =
-  Unix.ADDR_INET (Unix.inet_addr_of_string @@ Ipaddr.to_string ip, port)
+let make_sockaddr (ip, port) = match ip with
+  | Ipaddr.V4 _ -> Luv.Sockaddr.ipv4 (Ipaddr.to_string ip) port
+  | Ipaddr.V6 _ -> Luv.Sockaddr.ipv6 (Ipaddr.to_string ip) port
+
+let parse_sockaddr sockaddr =
+  match Luv.Sockaddr.to_string sockaddr, Luv.Sockaddr.port sockaddr with
+  | Some ip, Some port -> Ok (Ipaddr.of_string_exn ip, port)
+  | None, _ -> Error `UNKNOWN
+  | _, None -> Error `UNKNOWN
 
 let string_of_address (dst, dst_port) =
   Ipaddr.to_string dst ^ ":" ^ (string_of_int dst_port)
@@ -108,6 +115,17 @@ module Sockets = struct
       Log.warn (fun f -> f "Deregistered connection %d more than once" idx)
     end;
     Hashtbl.remove connection_table idx
+
+  let file_of_file_descr fd =
+    (* FIXME: this is Unix-only. It would be better to pass an fd over a pipe instead. *)
+    let os_fd : Luv.Os_fd.Fd.t = Obj.magic fd in
+    let error err =
+      let msg =
+        Fmt.strf "Socket.Pipe.of_bound_fd failed \
+                  with %s" (Luv.Error.strerror err) in
+      Log.err (fun f -> f "%s" msg);
+      failwith msg in
+    Luv.File.open_osfhandle os_fd
 
   module Datagram = struct
     type address = Ipaddr.t * int
@@ -434,6 +452,54 @@ module Sockets = struct
   end
 
   module Stream = struct
+
+    (* Common across TCP and Pipes *)
+
+    let read_into fd buf =
+      let buffer = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
+      let result, u = Luv_lwt.task () in
+      Luv.Stream.read_start ~allocate:(fun _suggested -> buffer) fd begin function
+        | Ok b ->
+          let n = Luv.Buffer.size buffer - (Luv.Buffer.size b) in
+          if n == 0 then begin
+            match Luv.Stream.read_stop fd with
+            | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data ()))
+            | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+          end
+        | Error err ->
+          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+        end;
+      result
+
+    let read fd =
+      let result, u = Luv_lwt.task () in
+      Luv.Stream.read_start fd begin function
+      | Ok buf ->
+        begin match Luv.Stream.read_stop fd with
+        | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data (Cstruct.of_bigarray buf)))
+        | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+        end
+      | Error err ->
+        Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+      end;
+      result
+
+    let writev fd bufs =
+      let buffers = List.map (fun buf -> Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len) bufs in
+      let result, u = Luv_lwt.task () in
+      let rec loop buffers =
+        if Luv.Buffer.total_size buffers == 0
+        then Luv_lwt.wakeup_later u (Ok ())
+        else Luv.Stream.write fd buffers begin fun r n -> match r with
+        | Error err ->
+          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+        | Ok () ->
+          loop (Luv.Buffer.drop buffers n)
+        end in
+      loop buffers;
+      result
+
+
     module Tcp = struct
       include Common
 
@@ -443,230 +509,143 @@ module Sockets = struct
         idx: int;
         label: string;
         description: string;
-        fd: Uwt.Tcp.t;
-        read_buffer_size: int;
-        mutable read_buffer: Cstruct.t;
+        fd: Luv.TCP.t;
         mutable closed: bool;
       }
 
-      let of_fd ~idx ~label ?(read_buffer_size = default_read_buffer_size)
-          ~description fd =
-        let read_buffer = Cstruct.create read_buffer_size in
+      let of_fd ~label
+          ~idx ?read_buffer_size:_ ~description fd
+        =
         let closed = false in
-        { idx; label; description; fd; read_buffer; read_buffer_size; closed }
+        { idx; label; description; fd; closed }
 
       let connect ?(read_buffer_size = default_read_buffer_size) (ip, port) =
         let description = Fmt.strf "tcp:%a:%d" Ipaddr.pp_hum ip port in
         let label = match ip with
         | Ipaddr.V4 _ -> "TCPv4"
         | Ipaddr.V6 _ -> "TCPv6" in
+
         register_connection_noexn description
         >>= function
         | None ->
           errorf "Socket.%s.connect %s: hit connection limit" label description
         | Some idx ->
-          let fd =
-            try match ip with
-            | Ipaddr.V4 _ -> Uwt.Tcp.init_ipv4_exn ()
-            | Ipaddr.V6 _ -> Uwt.Tcp.init_ipv6_exn ()
-            with e -> deregister_connection idx; raise e in
-          Lwt.catch (fun () ->
-              let sockaddr = make_sockaddr (ip, port) in
-              Uwt.Tcp.connect fd ~addr:sockaddr >>= fun () ->
-              let error = Uwt.Tcp.enable_keepalive fd 1 in
-              if Uwt.Int_result.is_error error then begin
-                Log.warn (fun f ->
-                f "Uwt.Tcp.enable_keepalive failed with: %s"
-                  (Uwt.strerror @@ Uwt.Int_result.to_error error))
-              end;
-              let error = Uwt.Tcp.nodelay fd true in
-              if Uwt.Int_result.is_error error then begin
-                Log.warn (fun f ->
-                f "Uwt.Tcp.nodelay failed with: %s"
-                  (Uwt.strerror @@ Uwt.Int_result.to_error error))
-              end;
-              of_fd ~idx ~label ~read_buffer_size ~description fd
-              |> Lwt_result.return
-            ) (fun e ->
-              deregister_connection idx;
-              log_exception_continue "Tcp.connect Uwt.Tcp.close_wait"
-                (fun () -> Uwt.Tcp.close_wait fd)
-              >>= fun () ->
-              errorf "Socket.%s.connect %s: caught %a" label description Fmt.exn e
-            )
+          let return_error err =
+            deregister_connection idx;
+            let msg = Fmt.strf "Socket.%s.connect %s:%d: %s" label (Ipaddr.to_string ip) port (Luv.Error.strerror err) in
+            Log.err (fun f -> f "%s" msg);
+            Lwt.return (Error (`Msg msg)) in
+          begin match Luv.TCP.init () with
+          | Error err -> return_error err
+          | Ok fd ->
+            begin match make_sockaddr (ip, port) with
+            | Error err ->
+              Luv.Handle.close fd ignore;
+              return_error err
+            | Ok sockaddr ->
+              let t, u = Luv_lwt.task () in
+              Luv.TCP.connect fd sockaddr (Luv_lwt.wakeup_later u);
+              t >>= function
+              | Error err ->
+                Luv.Handle.close fd ignore;
+                return_error err
+              | Ok () ->
+                Lwt.return (Ok (of_fd ~description ~idx ~label fd))
+            end
+          end
 
       let shutdown_read _ =
         Lwt.return ()
 
       let shutdown_write { label; description; fd; closed; _ } =
-        try if not closed then Uwt.Tcp.shutdown fd else Lwt.return ()
-        with
-        | Unix.Unix_error(Unix.ENOTCONN, _, _) -> Lwt.return ()
-        | e ->
-          Log.err (fun f ->
-              f "Socket.%s.shutdown_write %s: caught %a returning Eof"
-                label description Fmt.exn e);
-          Lwt.return ()
+        if not closed then Luv.Stream.shutdown fd begin function
+          | Error err -> Log.err (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err))
+          | Ok () -> ()
+        end;
+        Lwt.return_unit
 
-      let read_into t buf =
-        let rec loop buf =
-          if Cstruct.len buf = 0
-          then Lwt.return (Ok (`Data ()))
-          else
-            Uwt.Tcp.read_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-              ~buf:buf.Cstruct.buffer
-            >>= function
-            | 0 -> Lwt.return (Ok `Eof)
-            | n -> loop (Cstruct.shift buf n)
-        in
-        loop buf
-
-      let read t =
-        (if Cstruct.len t.read_buffer = 0
-         then t.read_buffer <- Cstruct.create t.read_buffer_size);
-        Lwt.catch (fun () ->
-            Uwt.Tcp.read_ba ~pos:t.read_buffer.Cstruct.off
-              ~len:t.read_buffer.Cstruct.len t.fd
-              ~buf:t.read_buffer.Cstruct.buffer
-            >>= function
-            | 0 -> Lwt.return (Ok `Eof)
-            | n ->
-              let results = Cstruct.sub t.read_buffer 0 n in
-              t.read_buffer <- Cstruct.shift t.read_buffer n;
-              Lwt.return (Ok (`Data results))
-          ) (function
-          | Unix.Unix_error(Unix.ECONNRESET, _, _) ->
-            Lwt.return (Ok `Eof)
-          | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
-            Lwt.return (Ok `Eof)
-          | e ->
-            Log.err (fun f ->
-                f "Socket.%s.read %s: caught %s returning Eof" t.label
-                  t.description (Printexc.to_string e));
-            Lwt.return (Ok `Eof)
-          )
-
-      let write t buf =
-        Lwt.catch (fun () ->
-            Uwt.Tcp.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-              ~buf:buf.Cstruct.buffer
-            >>= fun () ->
-            Lwt.return (Ok ())
-          ) (function
-          | Unix.Unix_error(Unix.ECONNRESET, _, _) ->
-            Lwt.return (Error `Closed)
-          | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
-            Lwt.return (Error `Closed)
-          | e ->
-            Log.err (fun f ->
-                f "Socket.%s.write %s: caught %s returning Eof" t.label
-                  t.description (Printexc.to_string e));
-            Lwt.return (Error `Closed)
-          )
-
-      let writev t bufs =
-        Lwt.catch (fun () ->
-            let rec loop = function
-            | [] -> Lwt.return (Ok ())
-            | buf :: bufs ->
-              Uwt.Tcp.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
-                ~buf:buf.Cstruct.buffer
-              >>= fun () ->
-              loop bufs
-            in
-            loop bufs
-          ) (function
-          | Unix.Unix_error(Unix.ECONNRESET, _, _) ->
-            Lwt.return (Error `Closed)
-          | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
-            Lwt.return (Error `Closed)
-          | e ->
-            Log.err (fun f ->
-                f "Socket.%s.writev %s: caught %s returning Eof" t.label
-                  t.description (Printexc.to_string e));
-            Lwt.return (Error `Closed)
-          )
+      let read_into t buf = read_into t.fd buf
+      let read t = read t.fd
+      let writev t bufs = writev t.fd bufs
+      let write t buf = writev t [ buf ]
 
       let close t =
         if not t.closed then begin
           t.closed <- true;
-          log_exception_continue "Tcp.close Uwt.Tcp.close_wait"
-            (fun () -> Uwt.Tcp.close_wait t.fd)
-          >>= fun () ->
+          Luv.Handle.close t.fd ignore;
           deregister_connection t.idx;
-          Lwt.return ()
-        end else Lwt.return ()
+        end;
+        Lwt.return_unit
 
       type server = {
         label: string;
-        mutable listening_fds: (int * Uwt.Tcp.t) list;
-        read_buffer_size: int;
+        mutable listening_fds: (int * Luv.TCP.t) list;
         mutable disable_connection_tracking: bool;
       }
 
-      let getsockname' = function
-      | [] -> failwith "Tcp.getsockname: socket is closed"
-      | (_, fd) :: _ ->
-        match Uwt.Tcp.getsockname_exn fd with
-        | Unix.ADDR_INET(iaddr, port) ->
-          Ipaddr.of_string_exn (Unix.string_of_inet_addr iaddr), port
-        | _ -> invalid_arg "Tcp.getsockname passed a non-TCP socket"
+      let getsockname' fd = match Luv.TCP.getsockname fd with
+        | Error err -> invalid_arg "Tcp.getsockname passed a non-TCP socket"
+        | Ok sockaddr ->
+          begin match parse_sockaddr sockaddr with
+          | Error _ -> invalid_arg "Tcp.getsockname unable to parse Sockaddr.t"
+          | Ok (ip, port) -> ip, port
+          end
+
+      let label_of ip = match ip with
+        | Ipaddr.V4 _, _ -> "TCPv4"
+        | Ipaddr.V6 _, _ -> "TCPv6"
 
       let make ?(read_buffer_size = default_read_buffer_size) listening_fds =
-        let label = match getsockname' listening_fds with
-        | Ipaddr.V4 _, _ -> "TCPv4"
-        | Ipaddr.V6 _, _ -> "TCPv6" in
-        { label; listening_fds; read_buffer_size;
+        let label = match listening_fds with
+        | [] -> failwith "socket is closed"
+        | (_, fd) :: _ -> label_of @@ fst @@ getsockname fd in
+        { label; listening_fds;
           disable_connection_tracking = false }
 
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
-      let getsockname server = getsockname' server.listening_fds
+      let getsockname server = match server.listening_fds with
+        | [] -> failwith "socket is closed"
+        | (_, fd) :: _ -> getsockname' fd
 
       let bind_one ?(description="") (ip, port) =
+        let label = match ip with
+        | Ipaddr.V4 _ -> "TCPv4"
+        | Ipaddr.V6 _ -> "TCPv6" in
         let description =
           Fmt.strf "tcp:%a:%d %s" Ipaddr.pp_hum ip port description
         in
         register_connection description >>= fun idx ->
-        let fd =
-          try Uwt.Tcp.init ()
-          with e -> deregister_connection idx; raise e
-        in
-        let addr = make_sockaddr (ip, port) in
-        let result = Uwt.Tcp.bind fd ~addr () in
-        let label = match ip with
-        | Ipaddr.V4 _ -> "TCPv4"
-        | Ipaddr.V6 _ -> "TCPv6" in
-        if not(Uwt.Int_result.is_ok result) then begin
-          let error = Uwt.Int_result.to_error result in
-          let msg =
-            Fmt.strf "Socket.%s.bind(%s, %d): %s" label (Ipaddr.to_string ip)
-              port (Uwt.strerror error)
-          in
-          Log.err (fun f -> f "Socket.%s.bind: %s" label msg);
+        let return_error err =
           deregister_connection idx;
-          Lwt.fail (Unix.Unix_error(Uwt.to_unix_error error, "bind", ""))
-        end else Lwt.return (idx, label, fd)
+          let msg = Fmt.strf "Socket.%s.bind_one %s:%d: %s" label (Ipaddr.to_string ip) port (Luv.Error.strerror err) in
+          Log.err (fun f -> f "%s" msg);
+          Lwt.return (Error (`Msg msg)) in
+        match Luv.TCP.init() with
+        | Error err -> return_error err
+        | Ok fd ->
+          begin match make_sockaddr (ip, port) with
+          | Error err -> return_error err
+          | Ok sockaddr ->
+            begin match Luv.TCP.bind fd sockaddr with
+            | Error err -> return_error err
+            | Ok () ->
+              (* Determine the local port number if the user requested INADDR_ANY *)
+              begin match Luv.TCP.getsockname fd with
+              | Error err -> return_error err
+              | Ok sockaddr ->
+                begin match parse_sockaddr sockaddr with
+                | Error err -> return_error err
+                | Ok (_, port) -> Lwt.return (idx, label, fd, port)
+                end
+              end
+            end
+          end
 
       let bind ?description (ip, port) =
         bind_one ?description (ip, port)
-        >>= fun (idx, label, fd) ->
-        ( match Uwt.Tcp.getsockname fd with
-        | Uwt.Ok sockaddr ->
-          begin match ip_port_of_sockaddr sockaddr with
-          | Some (_, local_port) -> Lwt.return local_port
-          | _ -> assert false
-          end
-        | Uwt.Error error ->
-          let msg =
-            Fmt.strf "Socket.%s.bind(%a, %d): %s" label Ipaddr.pp_hum ip port
-              (Uwt.strerror error)
-          in
-          Log.debug (fun f -> f "Socket.%s.bind: %s" label msg);
-          deregister_connection idx;
-          Lwt.fail (Unix.Unix_error(Uwt.to_unix_error error, "bind", "")) )
-        >>= fun local_port ->
+        >>= fun (idx, label, fd, local_port) ->
         (* On some systems localhost will resolve to ::1 first and this can
            cause performance problems (particularly on Windows). Perform a
            best-effort bind to the ::1 address. *)
@@ -693,100 +672,78 @@ module Sockets = struct
         let fds = server.listening_fds in
         server.listening_fds <- [];
         Lwt_list.iter_s (fun (idx, fd) ->
-            log_exception_continue "Tcp.shutdown: Uwt.Tcp.close_wait"
-              (fun () -> Uwt.Tcp.close_wait fd)
-            >|= fun () ->
-            deregister_connection idx;
-          ) fds
+          let t, u = Luv_lwt.task () in
+          Luv.Handle.close fd (Luv_lwt.wakeup_later u);
+          t >>= fun () ->
+          deregister_connection idx;
+          Lwt.return_unit
+        ) fds
 
       let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
-        let description = match Unix.getsockname fd with
-        | Unix.ADDR_INET(iaddr, port) ->
-          Fmt.strf "tcp:%s:%d" (Unix.string_of_inet_addr iaddr) port
-        | _ -> "of_bound_fd: unknown TCP socket" in
-        let fd = Uwt.Tcp.opentcp_exn fd in
-        let idx = register_connection_no_limit description in
-        make ~read_buffer_size [ (idx, fd) ]
+        match file_of_file_descr fd with
+        | Error err -> error err
+        | Ok file ->
+          let fd = Luv.TCP.init () |> Result.get_ok in
+          begin match Luv.TCP.open_ fd file with
+          | Error err -> error err
+          | Ok () ->
+            let description = match Luv.TCP.getsockname fd with
+              | Ok sockaddr ->
+                begin match parse_sockaddr sockaddr with
+                | Error _ -> "unable to parse sockaddr"
+                | Ok (ip, port) -> Fmt.strf "tcp:%s:%d" (Ip.to_string ip) port
+                end
+              | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
+            let idx = register_connection_no_limit description in
+            make ~read_buffer_size [ (idx, fd) ]
+          end
+
+      let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen server' cb =
+        let ip, port = getsockname server' in
+        let label = label_of ip in
+        let description = Fmt.strf "%s:%s:%d" label (Ipaddr.to_string ip) port in
+        let handle_connection client () =
+          (if server'.disable_connection_tracking
+           then Lwt.return @@
+             register_connection_no_limit description
+           else register_connection description )
+          >>= fun idx ->
+          let flow = of_fd ~label ~idx ~description client in
+          Lwt.finalize (fun () ->
+            log_exception_continue "TCP.listen"
+              (fun () -> cb flow)
+          ) (fun () -> close flow ) in
+
         List.iter (fun (_, fd) ->
-            let cb server x =
-              try
-                if Uwt.Int_result.is_error x then
-                  Log.err (fun f ->
-                      f "Uwt.Tcp.listen callback failed with: %s"
-                        (Uwt.strerror @@ Uwt.Int_result.to_error x))
-                else
-                  let client = Uwt.Tcp.init () in
-                  let t = Uwt.Tcp.accept_raw ~server ~client in
-                  if Uwt.Int_result.is_error t then begin
-                    Log.err (fun f ->
-                        f "Uwt.Tcp.accept_raw failed with: %s"
-                          (Uwt.strerror @@ Uwt.Int_result.to_error t))
-                  end else begin
-                    let error = Uwt.Tcp.enable_keepalive client 1 in
-                    if Uwt.Int_result.is_error error then begin
-                      Log.warn (fun f ->
-                      f "Uwt.Tcp.enable_keepalive failed with: %s"
-                        (Uwt.strerror @@ Uwt.Int_result.to_error error))
-                    end;
-                    let error = Uwt.Tcp.nodelay client true in
-                    if Uwt.Int_result.is_error error then begin
-                      Log.warn (fun f ->
-                      f "Uwt.Tcp.nodelay failed with: %s"
-                        (Uwt.strerror @@ Uwt.Int_result.to_error error))
-                    end;
-                    let label, description =
-                      match Uwt.Tcp.getpeername client with
-                      | Uwt.Ok sockaddr ->
-                        begin match ip_port_of_sockaddr sockaddr with
-                        | Some (ip, port) ->
-                          Fmt.strf "tcp:%s:%d" (Ipaddr.to_string ip) port,
-                          begin match ip with
-                          | Ipaddr.V4 _ -> "TCPv4"
-                          | Ipaddr.V6 _ -> "TCPv6"
-                          end
-                        | _ -> "unknown incoming TCP", "TCP"
-                        end
-                      | Uwt.Error error ->
-                        "getpeername failed: " ^ (Uwt.strerror error), "TCP"
-                    in
-
-                    Lwt.async (fun () ->
-                        Lwt.catch (fun () ->
-                            (if server'.disable_connection_tracking
-                             then
-                               Lwt.return @@
-                               register_connection_no_limit description
-                             else register_connection description )
-                            >|= fun idx ->
-                            Some (of_fd ~idx ~label ~description client)
-                          ) (fun _e ->
-                            log_exception_continue "Tcp.listen Uwt.Tcp.close_wait"
-                              (fun () -> Uwt.Tcp.close_wait client)
-                            >>= fun () ->
-                            Lwt.return_none
-                          ) >>= function
-                        | None -> Lwt.return_unit
-                        | Some flow ->
-                          log_exception_continue "listen" (fun () ->
-                              Lwt.finalize (fun () ->
-                                  log_exception_continue "Socket.Stream"
-                                    (fun () -> cb flow)
-                                ) (fun () -> close flow)
-                            ))
+          Luv.Stream.listen fd begin function
+          | Error err -> Log.err (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
+          | Ok () ->
+            let rec accept_forever () =
+              match Luv.TCP.init () with
+              | Error err -> Log.err (fun f -> f "TCP.init: %s"  (Luv.Error.strerror err))
+              | Ok client ->
+                let error msg err =
+                  Log.err (fun f -> f "Socket.%s.listen %s: %s" label msg (Luv.Error.strerror err));
+                  Luv.Handle.close client ignore in
+                begin match Luv.Stream.accept ~server:fd ~client with
+                | Error err -> error "accept" err
+                | Ok () ->
+                  begin match Luv.TCP.nodelay client true with
+                  | Error err -> error "nodelay" err
+                  | Ok () ->
+                    begin match Luv.TCP.keepalive client (Some 1) with
+                    | Error err -> error "keepalive" err
+                    | Ok () ->
+                      Luv_lwt.push accept_queue (handle_connection, client);
+                      accept_forever ()
+                    end
                   end
-              with e ->
-                Log.err (fun f ->
-                    f "Uwt.Tcp.listen callback raised: %a" Fmt.exn e)
-            in
-            let listen_result = Uwt.Tcp.listen fd ~max:(!Utils.somaxconn) ~cb in
-            if Uwt.Int_result.is_error listen_result
-            then Log.err (fun f ->
-                f "Uwt.Tcp.listen failed with: %s"
-                  (Uwt.strerror @@ Uwt.Int_result.to_error listen_result))
-          ) server'.listening_fds
-
+                end in
+            accept_forever ()
+          end
+        ) server'.listening_fds
     end
 
     module Unix = struct
@@ -816,6 +773,7 @@ module Sockets = struct
         >>= fun idx ->
         begin match Luv.Pipe.init () with
         | Error err ->
+          deregister_connection idx;
           let msg = Fmt.strf "Pipe.connect %s: %s" path (Luv.Error.strerror err) in
           Log.err (fun f -> f "%s" msg);
           Lwt.fail_with msg
@@ -840,50 +798,9 @@ module Sockets = struct
         end;
         Lwt.return_unit
 
-      let read_into t buf =
-        let buffer = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
-        let result, u = Luv_lwt.task () in
-        Luv.Stream.read_start ~allocate:(fun _suggested -> buffer) t.fd begin function
-          | Ok b ->
-            let n = Luv.Buffer.size buffer - (Luv.Buffer.size b) in
-            if n == 0 then begin
-              match Luv.Stream.read_stop t.fd with
-              | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data ()))
-              | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-            end
-          | Error err ->
-            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-          end;
-        result
-
-      let read t =
-        let result, u = Luv_lwt.task () in
-        Luv.Stream.read_start t.fd begin function
-        | Ok buf ->
-          begin match Luv.Stream.read_stop t.fd with
-          | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data (Cstruct.of_bigarray buf)))
-          | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-          end
-        | Error err ->
-          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-        end;
-        result
-
-      let writev t bufs =
-        let buffers = List.map (fun buf -> Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len) bufs in
-        let result, u = Luv_lwt.task () in
-        let rec loop buffers =
-          if Luv.Buffer.total_size buffers == 0
-          then Luv_lwt.wakeup_later u (Ok ())
-          else Luv.Stream.write t.fd buffers begin fun r n -> match r with
-          | Error err ->
-            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-          | Ok () ->
-            loop (Luv.Buffer.drop buffers n)
-          end in
-        loop buffers;
-        result
-
+      let read_into t buf = read_into t.fd buf
+      let read t = read t.fd
+      let writev t bufs = writev t.fd bufs
       let write t buf = writev t [ buf ]
 
       let close t =
@@ -958,15 +875,7 @@ module Sockets = struct
         end
 
       let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
-        (* FIXME: this is Unix-only. It would be better to pass an fd over a pipe instead. *)
-        let os_fd : Luv.Os_fd.Fd.t = Obj.magic fd in
-        let error err =
-          let msg =
-            Fmt.strf "Socket.Pipe.of_bound_fd (read_buffer_size=%d) failed \
-                      with %s" read_buffer_size (Luv.Error.strerror err) in
-          Log.err (fun f -> f "%s" msg);
-          failwith msg in
-        match Luv.File.open_osfhandle os_fd with
+        match file_of_file_descr fd with
         | Error err -> error err
         | Ok file ->
           let fd = Luv.Pipe.init () |> Result.get_ok in
