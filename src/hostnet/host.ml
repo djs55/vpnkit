@@ -1004,15 +1004,15 @@ module Dns = struct
 end
 
 module Main = struct
-  let run = Uwt.Main.run
-  let run_in_main = Uwt_preemptive.run_in_main
+  let run _ = ignore (Luv.Loop.run () : bool)
+  let run_in_main _ = failwith "FIXME: run_in_main not implemented"
 end
 
 module Fn = struct
   type ('request, 'response) t = 'request -> 'response
   let create f = f
   let destroy _ = ()
-  let fn = Uwt_preemptive.detach
+  let fn _ = failwith "FIXME: detach not implemented"
 end
 
 let compact () =
