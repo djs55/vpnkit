@@ -7,8 +7,6 @@ let src =
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
-let default_read_buffer_size = 65536
-
 let log_exception_continue description f =
   let to_string = function
     | Failure x -> x
@@ -48,12 +46,6 @@ module Common = struct
 
   let errorf fmt = Fmt.kstrf (fun s -> Lwt_result.fail (`Msg s)) fmt
 
-  let ip_port_of_sockaddr sockaddr =
-    try match sockaddr with
-    | Unix.ADDR_INET(ip, port) ->
-      Some (Ipaddr.of_string_exn @@ Unix.string_of_inet_addr ip, port)
-    | _ -> None
-    with _ -> None
 end
 
 module Sockets = struct
@@ -139,7 +131,7 @@ module Sockets = struct
       let string_of_flow t = Fmt.strf "udp -> %s" (string_of_address t.address)
 
       let of_fd
-          ?idx ?(read_buffer_size = Constants.max_udp_length)
+          ?idx ?read_buffer_size:_
           ?(already_read = None) ~description sockaddr address fd
         =
         let label = match fst address with
@@ -204,7 +196,7 @@ module Sockets = struct
                  was %d bytes)" t.label (Luv.Buffer.size buf));
           end else begin
             begin match parse_sockaddr peer with
-              | Error err ->
+              | Error _ ->
                 Log.warn (fun f ->
                   f "Socket.%s.read: dropping response from unknown peer" t.label
                 )
@@ -215,7 +207,7 @@ module Sockets = struct
                     (string_of_address address)
                     (string_of_address t.address)
                 )
-              | Ok address ->
+              | Ok _ ->
                 (* We got one! *)
                 begin match Luv.UDP.recv_stop fd with
                 | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
@@ -302,12 +294,12 @@ module Sockets = struct
             end
           end
 
-      let of_bound_fd ?(read_buffer_size:_) fd =
+      let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "UDP.of_bound_fd not implemented"
 
-      let getsockname { label; fd; _ } =
+      let getsockname { fd; _ } =
         match Luv.UDP.getsockname fd with
-        | Error err -> invalid_arg "UDP.getsockname passed a non-UDP socket"
+        | Error _ -> invalid_arg "UDP.getsockname passed a non-UDP socket"
         | Ok sockaddr ->
           begin match parse_sockaddr sockaddr with
           | Error _ -> invalid_arg "UDP.getsockname unable to parse Sockaddr.t"
@@ -335,7 +327,7 @@ module Sockets = struct
                  was %d bytes)" server.label (Luv.Buffer.size buf));
           end else begin
             begin match parse_sockaddr peer with
-              | Error err ->
+              | Error _ ->
                 Log.warn (fun f ->
                   f "Socket.%s.read: dropping response from unknown peer" server.label
                 )
@@ -366,7 +358,7 @@ module Sockets = struct
               (* No new fd so no new idx *)
               let description = Fmt.strf "udp:%s" (string_of_address address) in
               match make_sockaddr address with
-              | Error err ->
+              | Error _ ->
                 Log.warn (fun f ->
                   f "Socket.%s.listen: dropping response from unknown peer" t.label
                 );
@@ -409,7 +401,7 @@ module Sockets = struct
           (fun () ->
             let buf = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
             match make_sockaddr (ip, port) with
-            | Error err ->
+            | Error _ ->
               Lwt.fail_with "UDP.sendto unable to convert ip, port to Luv.Sockaddr.t"
             | Ok sockaddr ->
               begin match Luv.UDP.set_ttl server.fd ttl with
@@ -501,7 +493,7 @@ module Sockets = struct
         let closed = false in
         { idx; label; description; fd; closed }
 
-      let connect ?(read_buffer_size = default_read_buffer_size) (ip, port) =
+      let connect ?read_buffer_size:_ (ip, port) =
         let description = Fmt.strf "tcp:%a:%d" Ipaddr.pp_hum ip port in
         let label = match ip with
         | Ipaddr.V4 _ -> "TCPv4"
@@ -539,7 +531,7 @@ module Sockets = struct
       let shutdown_read _ =
         Lwt.return ()
 
-      let shutdown_write { label; description; fd; closed; _ } =
+      let shutdown_write { label; fd; closed; _ } =
         if not closed then Luv.Stream.shutdown fd begin function
           | Error err -> Log.err (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err))
           | Ok () -> ()
@@ -566,7 +558,7 @@ module Sockets = struct
       }
 
       let getsockname' fd = match Luv.TCP.getsockname fd with
-        | Error err -> invalid_arg "Tcp.getsockname passed a non-TCP socket"
+        | Error _ -> invalid_arg "Tcp.getsockname passed a non-TCP socket"
         | Ok sockaddr ->
           begin match parse_sockaddr sockaddr with
           | Error _ -> invalid_arg "Tcp.getsockname unable to parse Sockaddr.t"
@@ -577,7 +569,7 @@ module Sockets = struct
         | Ipaddr.V4 _ -> "TCPv4"
         | Ipaddr.V6 _ -> "TCPv6"
 
-      let make ?(read_buffer_size = default_read_buffer_size) listening_fds =
+      let make ?read_buffer_size:_ listening_fds =
         let label = match listening_fds with
         | [] -> failwith "socket is closed"
         | (_, fd) :: _ -> label_of @@ fst @@ getsockname' fd in
@@ -637,7 +629,7 @@ module Sockets = struct
         bind_one ?description (ip, port)
         >>= function
         | Error (`Msg m) -> Lwt.fail_with m
-        | Ok (idx, label, fd, local_port) ->
+        | Ok (idx, _label, fd, local_port) ->
         (* On some systems localhost will resolve to ::1 first and this can
            cause performance problems (particularly on Windows). Perform a
            best-effort bind to the ::1 address. *)
@@ -673,7 +665,7 @@ module Sockets = struct
           Lwt.return_unit
         ) fds
 
-      let of_bound_fd ?(read_buffer_size:_) fd =
+      let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "TCP.of_bound_fd not implemented"
 
       let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
@@ -852,7 +844,7 @@ module Sockets = struct
           accept_forever ()
         end
 
-      let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
+      let of_bound_fd ?read_buffer_size:_ fd =
         let return_error err =
           let msg = Fmt.strf "Pipe.of_bound_fd: %s" (Luv.Error.strerror err) in
           Log.err (fun f -> f "%s" msg);
