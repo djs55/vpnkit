@@ -172,11 +172,6 @@ struct
         >>= fun () ->
         Lwt.return true
       ) (function
-      | Unix.Unix_error(e, _, _) when
-          Uwt.of_unix_error e = Uwt.ECANCELED ->
-        Log.debug (fun f ->
-            f "Hostnet_udp %s: shutting down listening thread" (description d));
-        Lwt.return false
       | e ->
         Log.err (fun f ->
             f "Hostnet_udp %s: caught unexpected exception %a"

@@ -1027,7 +1027,7 @@ let compact () =
   )
 
 let start_background_gc config =
-  let () = match config with
+  match config with
   | None ->
     Log.info (fun f -> f "No periodic Gc.compact enabled")
   | Some s ->
@@ -1037,12 +1037,3 @@ let start_background_gc config =
       compact ();
       loop () in
     Lwt.async loop
-  in
-  if Sys.os_type = "Unix" then begin
-    (* This fails with EINVAL on Windows *)
-    let (_: Uwt.Signal.t) = Uwt.Signal.start_exn Sys.sigusr1 ~cb:(fun _t _signal ->
-        Log.info (fun f -> f "Received SIGUSR1");
-        compact ()
-    ) in
-    ()
-  end

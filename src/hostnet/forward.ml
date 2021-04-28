@@ -246,8 +246,6 @@ unix:<base64-encoded local path>:unix:<base64-encoded remote path>"
             Lwt.return true
           ) (function
           | Unix.Unix_error(Unix.EBADF, _, _) -> Lwt.return false
-          | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
-            Lwt.return false
           | e ->
             Log.err (fun f ->
                 f "%s: shutting down recvfrom thread: %a" description Fmt.exn e);
