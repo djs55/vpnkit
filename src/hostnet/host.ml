@@ -303,7 +303,7 @@ module Sockets = struct
           end
 
       let of_bound_fd ?(read_buffer_size:_) fd =
-        Lwt.fail_with "UDP.of_bound_fd not implemented"
+        failwith "UDP.of_bound_fd not implemented"
 
       let getsockname { label; fd; _ } =
         match Luv.UDP.getsockname fd with
@@ -426,6 +426,9 @@ module Sockets = struct
                 result
                 end
           )
+        >>= function
+        | Error (`Msg m) -> Lwt.fail_with m
+        | Ok () -> Lwt.return_unit
     end
 
   end
@@ -571,13 +574,13 @@ module Sockets = struct
           end
 
       let label_of ip = match ip with
-        | Ipaddr.V4 _, _ -> "TCPv4"
-        | Ipaddr.V6 _, _ -> "TCPv6"
+        | Ipaddr.V4 _ -> "TCPv4"
+        | Ipaddr.V6 _ -> "TCPv6"
 
       let make ?(read_buffer_size = default_read_buffer_size) listening_fds =
         let label = match listening_fds with
         | [] -> failwith "socket is closed"
-        | (_, fd) :: _ -> label_of @@ fst @@ getsockname fd in
+        | (_, fd) :: _ -> label_of @@ fst @@ getsockname' fd in
         { label; listening_fds;
           disable_connection_tracking = false }
 
@@ -624,7 +627,7 @@ module Sockets = struct
                 | Error err ->
                   Luv.Handle.close fd ignore;
                   return_error err
-                | Ok (_, port) -> Lwt.return (idx, label, fd, port)
+                | Ok (_, port) -> Lwt.return (Ok (idx, label, fd, port))
                 end
               end
             end
@@ -632,7 +635,9 @@ module Sockets = struct
 
       let bind ?description (ip, port) =
         bind_one ?description (ip, port)
-        >>= fun (idx, label, fd, local_port) ->
+        >>= function
+        | Error (`Msg m) -> Lwt.fail_with m
+        | Ok (idx, label, fd, local_port) ->
         (* On some systems localhost will resolve to ::1 first and this can
            cause performance problems (particularly on Windows). Perform a
            best-effort bind to the ::1 address. *)
@@ -643,8 +648,10 @@ module Sockets = struct
               Log.debug (fun f ->
                   f "Attempting a best-effort bind of ::1:%d" local_port);
               bind_one (Ipaddr.(V6 V6.localhost), local_port)
-              >>= fun (idx, _, fd) ->
-              Lwt.return [ idx, fd ]
+              >>= function
+              | Error (`Msg m) -> Lwt.fail_with m
+              | Ok (idx, _, fd, _) ->
+                Lwt.return [ idx, fd ]
             end else
               Lwt.return []
           ) (fun e ->
@@ -666,24 +673,8 @@ module Sockets = struct
           Lwt.return_unit
         ) fds
 
-      let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
-        match file_of_file_descr fd with
-        | Error err -> error err
-        | Ok file ->
-          let fd = Luv.TCP.init () |> Result.get_ok in
-          begin match Luv.TCP.open_ fd file with
-          | Error err -> error err
-          | Ok () ->
-            let description = match Luv.TCP.getsockname fd with
-              | Ok sockaddr ->
-                begin match parse_sockaddr sockaddr with
-                | Error _ -> "unable to parse sockaddr"
-                | Ok (ip, port) -> Fmt.strf "tcp:%s:%d" (Ip.to_string ip) port
-                end
-              | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
-            let idx = register_connection_no_limit description in
-            make ~read_buffer_size [ (idx, fd) ]
-          end
+      let of_bound_fd ?(read_buffer_size:_) fd =
+        failwith "TCP.of_bound_fd not implemented"
 
       let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
 
@@ -862,12 +853,18 @@ module Sockets = struct
         end
 
       let of_bound_fd ?(read_buffer_size = default_read_buffer_size) fd =
+        let return_error err =
+          let msg = Fmt.strf "Pipe.of_bound_fd: %s" (Luv.Error.strerror err) in
+          Log.err (fun f -> f "%s" msg);
+          failwith msg in
         match file_of_file_descr fd with
-        | Error err -> error err
+        | Error err -> return_error err
         | Ok file ->
           let fd = Luv.Pipe.init () |> Result.get_ok in
           begin match Luv.Pipe.open_ fd file with
-          | Error err -> error err
+          | Error err ->
+            Luv.Handle.close fd ignore;
+            return_error err
           | Ok () ->
             let description = match Luv.Pipe.getsockname fd with
               | Ok path -> "unix:" ^ path
