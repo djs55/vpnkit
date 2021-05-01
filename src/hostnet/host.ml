@@ -7,6 +7,13 @@ let src =
 
 module Log = (val Logs.src_log src : Logs.LOG)
 
+module Result = struct
+  include Result
+  let get_ok = function
+    | Error _ -> invalid_arg "result is Error _"
+    | Ok x -> x
+end
+
 let log_exception_continue description f =
   let to_string = function
     | Failure x -> x
