@@ -58,3 +58,29 @@ let wakeup_later u x =
   push unit_wakeup_later u.u
 
 exception Error of Luv.Error.t
+
+let%test "wakeup one task from a luv callback" =
+  let t, u = task () in
+  let luv = Thread.create (fun () ->
+    wakeup_later u ()
+    ) () in
+  Thread.join luv;
+  Lwt_main.run t;
+  true
+
+let%test "wakeup lots of tasks from a luv callback" =
+  let n = 1000 in
+  let tasks : (int Lwt.t * int task) list = Array.init n (fun _ -> task ()) |> Array.to_list in
+  List.iteri (fun i (_, u) ->
+    let _: Thread.t = Thread.create (fun i ->
+      (* Introduce jitter *)
+      Thread.delay 0.5;
+      wakeup_later u i
+      ) i in
+    ()
+  ) tasks;
+  Lwt_main.run begin
+    let open Lwt.Infix in
+    let ts = List.map fst tasks in
+    Lwt_list.fold_left_s (fun acc b_t -> b_t >>= fun b -> Lwt.return (acc + b)) 0 ts
+  end = (n * (n - 1)) / 2
