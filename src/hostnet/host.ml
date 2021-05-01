@@ -952,7 +952,16 @@ module Time = struct
       let t, u = Luv_lwt.task () in
       ignore (Luv.Timer.start timer (Duration.to_ms ns) (Luv_lwt.wakeup_later u));
       t
+
+  let%test "Time.sleep_ns wakes up" =
+    let t = sleep_ns (Duration.of_ms 100) in
+    let start = Unix.gettimeofday () in
+    ignore (Luv.Loop.run () : bool);
+    Lwt_main.run t;
+    let duration = Unix.gettimeofday () -. start in
+    duration >= 0.1
 end
+
 
 module Dns = struct
   (* FIXME: error handling completely missing *)
