@@ -8,11 +8,11 @@ val push: 'a queue -> 'a -> unit
 (** [push q x] pushes a job [x] to the queue [q]. *)
 
 
-type 'a task
-(** A task which may be woken up from a foreign thrad *)
+type 'a u
+(** A task result which can be sent from a foreign thread *)
 
-val task: unit -> 'a Lwt.t * 'a task
+val task: unit -> 'a Lwt.t * 'a u
 
-val wakeup_later: 'a task -> 'a -> unit
+val wakeup_later: 'a u -> 'a -> unit
 
 exception Error of Luv.Error.t

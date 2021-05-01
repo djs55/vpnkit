@@ -38,7 +38,7 @@ let make_queue run =
 let unit_wakeup_later = make_queue (fun x -> Lwt.wakeup_later x ())
  
 (* Wrap the result value here. *)
-type 'a task = {
+type 'a u = {
   result: 'a option ref;
   u: unit Lwt.u;
 }
@@ -70,7 +70,7 @@ let%test "wakeup one task from a luv callback" =
 
 let%test "wakeup lots of tasks from a luv callback" =
   let n = 1000 in
-  let tasks : (int Lwt.t * int task) list = Array.init n (fun _ -> task ()) |> Array.to_list in
+  let tasks = Array.init n (fun _ -> task ()) |> Array.to_list in
   List.iteri (fun i (_, u) ->
     let _: Thread.t = Thread.create (fun i ->
       (* Introduce jitter *)
