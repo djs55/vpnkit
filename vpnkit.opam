@@ -24,7 +24,6 @@ build: [
 depends: [
   "dune" {build}
   "alcotest"   {test}
-  "result"
   "tar" {>= "0.8.0"}
   "ipaddr" {= "2.8.0"}
   "lwt" {= "5.4.0"}
