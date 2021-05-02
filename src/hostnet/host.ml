@@ -675,7 +675,7 @@ module Sockets = struct
       let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "TCP.of_bound_fd not implemented"
 
-      let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
+      let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen server' cb =
         let ip, port = getsockname server' in
@@ -713,7 +713,7 @@ module Sockets = struct
                     begin match Luv.TCP.keepalive client (Some 1) with
                     | Error err -> error "keepalive" err
                     | Ok () ->
-                      Luv_lwt.push accept_queue (handle_connection, client);
+                      Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, client);
                       accept_forever ()
                     end
                   end
@@ -819,7 +819,7 @@ module Sockets = struct
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
-      let accept_queue = Luv_lwt.make_queue (fun (cb, pipe) -> Lwt.async (cb pipe))
+      let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen ({ fd; _ } as server') cb =
         let handle_connection client () =
@@ -845,7 +845,7 @@ module Sockets = struct
               begin match Luv.Stream.accept ~server:fd ~client with
               | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
               | Ok () ->
-                Luv_lwt.push accept_queue (handle_connection, client);
+                Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, client);
                 accept_forever ()
               end in
           accept_forever ()
@@ -948,16 +948,20 @@ end
 module Time = struct
   type 'a io = 'a Lwt.t
   let sleep_ns ns =
+    let t, u = Luv_lwt.task () in
+    Luv_lwt.(Run_in_luv.push default_loop (fun () ->
       let timer = Luv.Timer.init () |> Result.get_ok in
-      let t, u = Luv_lwt.task () in
-      ignore (Luv.Timer.start timer (Duration.to_ms ns) (Luv_lwt.wakeup_later u));
-      t
+      ignore (Luv.Timer.start timer (Duration.to_ms ns) (fun () ->
+        Luv_lwt.wakeup_later u ()
+      ));
+    ));
+    t
 
   let%test "Time.sleep_ns wakes up" =
+  Printf.printf "sleep_ns\n%!";
     let t = sleep_ns (Duration.of_ms 100) in
     let start = Unix.gettimeofday () in
-    ignore (Luv.Loop.run () : bool);
-    Lwt_main.run t;
+    Luv_lwt.run t;
     let duration = Unix.gettimeofday () -. start in
     duration >= 0.1
 end
@@ -988,8 +992,7 @@ module Dns = struct
 
   let%test "getaddrinfo dave.recoil.org" =
     let t = getaddrinfo "dave.recoil.org" `INET in
-    ignore (Luv.Loop.run () : bool);
-    Lwt_main.run begin
+    Luv_lwt.run begin
       t >>= fun ips ->
       Lwt.return (ips <> [])
     end
@@ -1028,21 +1031,7 @@ module Dns = struct
 end
 
 module Main = struct
-  let run t =
-    let stop_default_loop = Luv.Async.init (fun _ ->
-      Luv.Loop.stop (Luv.Loop.default ())
-    ) |> Result.get_ok in
-    let luv = Thread.create (fun () ->
-      ignore (Luv.Loop.run () : bool);
-    ) () in
-
-    let result = Lwt_main.run t in
-
-    Luv.Async.send stop_default_loop |> Result.get_ok;
-    Luv.Handle.close stop_default_loop ignore;
-    Thread.join luv;
-    result
-
+  let run = Luv_lwt.run
   let%test "Host.Main.Run has a working luv event loop" =
     run begin
       Time.sleep_ns (Duration.of_ms 100)
