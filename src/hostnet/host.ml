@@ -1055,9 +1055,5 @@ let start_background_gc config =
   | None ->
     Log.info (fun f -> f "No periodic Gc.compact enabled")
   | Some s ->
-    let rec loop () =
-      Time.sleep_ns (Duration.of_sec s)
-      >>= fun () ->
-      compact ();
-      loop () in
-    Lwt.async loop
+    let timer = Luv.Timer.init () |> Result.get_ok in
+    Luv.Timer.start timer (5 * 1000) ~repeat:(s * 1000) compact |> Result.get_ok
