@@ -986,6 +986,14 @@ module Dns = struct
         | _ -> acc
         ) [] x
 
+  let%test "getaddrinfo dave.recoil.org" =
+    let t = getaddrinfo "dave.recoil.org" `INET in
+    ignore (Luv.Loop.run () : bool);
+    Lwt_main.run begin
+      t >>= fun ips ->
+      Lwt.return (ips <> [])
+    end
+
   let localhost_local = Dns.Name.of_string "localhost.local"
 
   let resolve_getaddrinfo question =
