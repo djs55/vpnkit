@@ -73,9 +73,13 @@ module Run_in_lwt = Work_queue(Lwt_notification)
 
 module Run_in_luv = Work_queue(Luv_notification)
 
-let default_loop = Run_in_luv.make (fun f -> f ())
+let to_luv_default_loop = Run_in_luv.make (fun f -> f ())
 
-let run_in_luv f = Run_in_luv.push default_loop f
+let run_in_luv = Run_in_luv.push to_luv_default_loop
+
+let to_lwt_default_loop = Run_in_lwt.make (fun f -> f ())
+
+let run_in_lwt f () = Run_in_lwt.push to_lwt_default_loop f
 
 let run t =
   (* Hopefully it's ok to create the async handle in this thread, even though the

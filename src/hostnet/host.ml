@@ -948,12 +948,10 @@ end
 module Time = struct
   type 'a io = 'a Lwt.t
   let sleep_ns ns =
-    let t, u = Luv_lwt.task () in
+    let t, u = Lwt.task () in
     Luv_lwt.run_in_luv (fun () ->
       let timer = Luv.Timer.init () |> Result.get_ok in
-      ignore (Luv.Timer.start timer (Duration.to_ms ns) (fun () ->
-        Luv_lwt.wakeup_later u ()
-      ));
+      ignore @@ Luv.Timer.start timer (Duration.to_ms ns) @@ Luv_lwt.run_in_lwt @@ Lwt.wakeup_later u;
     );
     t
 

@@ -14,6 +14,9 @@ module Run_in_lwt: Remote_work_queue
 val run_in_luv: (unit -> unit) -> unit
 (** [run_in_luv f] runs [f ()] in the default Luv event loop. *)
 
+val run_in_lwt: (unit -> unit) -> unit -> unit
+(** [run_in_lwt f] runs [f ()] in the default Lwt event loop. *)
+
 val run: 'a Lwt.t -> 'a
 (** [run t] evaluates [t] with the default Luv event loop. *)
 
