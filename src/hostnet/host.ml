@@ -1028,7 +1028,26 @@ module Dns = struct
 end
 
 module Main = struct
-  let run _ = ignore (Luv.Loop.run () : bool)
+  let run t =
+    let stop_default_loop = Luv.Async.init (fun _ ->
+      Luv.Loop.stop (Luv.Loop.default ())
+    ) |> Result.get_ok in
+    let luv = Thread.create (fun () ->
+      ignore (Luv.Loop.run () : bool);
+    ) () in
+
+    let result = Lwt_main.run t in
+
+    Luv.Async.send stop_default_loop |> Result.get_ok;
+    Luv.Handle.close stop_default_loop ignore;
+    Thread.join luv;
+    result
+
+  let%test "Host.Main.Run has a working luv event loop" =
+    run begin
+      Time.sleep_ns (Duration.of_ms 100)
+    end;
+    true
   let run_in_main _ = failwith "FIXME: run_in_main not implemented"
 end
 
