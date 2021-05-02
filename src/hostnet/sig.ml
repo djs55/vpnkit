@@ -141,7 +141,7 @@ module type FILES = sig
 
   type watch
 
-  val watch_file: string -> (unit -> unit) -> (watch, [ `Msg of string ]) result
+  val watch_file: string -> (unit -> unit) -> (watch, [ `Msg of string ]) result Lwt.t
   (** [watch_file path callback] executes [callback] whenever the contents of
       [path] may have changed. *)
 

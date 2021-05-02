@@ -944,25 +944,53 @@ module Files = struct
 
   type watch = {
     h: [ `FS_event ] Luv.Handle.t;
-    n: int;
   }
 
   let unwatch w =
-    Luv.FS_event.stop w.h |> Result.get_ok;
-    Lwt_unix.stop_notification w.n
+    Luv.FS_event.stop w.h |> Result.get_ok
 
   let watch_file path callback =
-    let h = Luv.FS_event.init () |> Result.get_ok in
-    let n = Lwt_unix.make_notification callback in
+    let t, u = Lwt.task () in
+    Luv_lwt.run_in_luv (fun () ->
+      let h = Luv.FS_event.init () |> Result.get_ok in
 
-    Luv.FS_event.start h path
-      (function
-      | Ok _ ->
-        Lwt_unix.send_notification n
-      | Error err ->
-        Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
-    Ok { h; n }
+      Luv.FS_event.start h path
+        (function
+        | Ok _ ->
+          Luv_lwt.run_in_lwt callback ();
+        | Error err ->
+          Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
+      Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Ok { h })) ()
+    );
+    t
 
+  let%test "watch a file" =
+    let filename = Filename.temp_file "vpnkit" "file" in
+    let oc = open_out_bin filename in
+    Luv_lwt.run begin
+      let m = Lwt_mvar.create () in
+      watch_file filename (fun () ->
+        Lwt.async (fun () -> Lwt_mvar.put m ())
+      )
+      >>= function
+      | Error (`Msg m) ->
+        close_out oc;
+        Sys.remove filename;
+        failwith m
+      | Ok w ->
+        output_string oc "one";
+        flush oc;
+        Lwt_mvar.take m
+        >>= fun () ->
+        output_string oc "two";
+        flush oc;
+        Lwt_mvar.take m
+        >>= fun () ->
+        close_out oc;
+        Sys.remove filename;
+        unwatch w;
+        Lwt.return true
+    end
 end
 
 module Time = struct

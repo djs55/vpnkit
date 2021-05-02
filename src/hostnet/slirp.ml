@@ -1346,7 +1346,7 @@ struct
     ( match c.dns_path with
       | None -> Lwt.return_unit
       | Some path ->
-        begin match Host.Files.watch_file path
+        begin Host.Files.watch_file path
           (fun () ->
             Log.info (fun f -> f "DNS configuration file %s has changed" path);
             Lwt.async (fun () ->
@@ -1355,13 +1355,15 @@ struct
                   read_dns_file path
                 )
             )
-          ) with
+          )
+        >>= function
         | Error (`Msg m) ->
-          Log.err (fun f -> f "Failed to watch DNS configuration file %s for changes: %s" path m)
+          Log.err (fun f -> f "Failed to watch DNS configuration file %s for changes: %s" path m);
+          Lwt.return_unit
         | Ok _watch ->
-          Log.info (fun f -> f "Watching DNS configuration file %s for changes" path)
-        end;
-        Lwt.return_unit
+          Log.info (fun f -> f "Watching DNS configuration file %s for changes" path);
+          Lwt.return_unit
+        end
     ) >>= fun () ->
 
     let read_http_intercept_file path =
@@ -1382,7 +1384,7 @@ struct
     ( match c.http_intercept_path with
     | None -> Lwt.return_unit
     | Some path ->
-      begin match Host.Files.watch_file path
+      begin Host.Files.watch_file path
         (fun () ->
           Log.info (fun f -> f "Transparent HTTP redirection configuration file %s has changed" path);
           Lwt.async (fun () ->
@@ -1391,13 +1393,15 @@ struct
                 read_http_intercept_file path
               )
           )
-        ) with
+        )
+      >>= function
       | Error (`Msg m) ->
-        Log.err (fun f -> f "Failed to watch transparent HTTP redirection configuration file %s for changes: %s" path m)
+        Log.err (fun f -> f "Failed to watch transparent HTTP redirection configuration file %s for changes: %s" path m);
+        Lwt.return_unit
       | Ok _watch ->
-        Log.info (fun f -> f "Watching transparent HTTP redirection configuration file %s for changes" path)
-      end;
-      Lwt.return_unit
+        Log.info (fun f -> f "Watching transparent HTTP redirection configuration file %s for changes" path);
+        Lwt.return_unit
+      end
     ) >>= fun () ->
 
     Hostnet_dhcp.update_global_configuration c.Configuration.dhcp_configuration;
@@ -1414,7 +1418,7 @@ struct
     ( match c.dhcp_json_path with
     | None -> Lwt.return_unit
     | Some path ->
-      begin match Host.Files.watch_file path
+      begin Host.Files.watch_file path
         (fun () ->
           Log.info (fun f -> f "DHCP configuration file %s has changed" path);
           Lwt.async (fun () ->
@@ -1423,13 +1427,15 @@ struct
                 read_dhcp_json_file path
               )
           )
-        ) with
+        )
+      >>= function
       | Error (`Msg m) ->
-        Log.err (fun f -> f "Failed to watch DHCP configuration file %s for changes: %s" path m)
+        Log.err (fun f -> f "Failed to watch DHCP configuration file %s for changes: %s" path m);
+        Lwt.return_unit
       | Ok _watch ->
-        Log.info (fun f -> f "Watching DHCP configuration file %s for changes" path)
-      end;
-      Lwt.return_unit
+        Log.info (fun f -> f "Watching DHCP configuration file %s for changes" path);
+        Lwt.return_unit
+      end
     ) >>= fun () ->
 
     (* Set the static forwarding table before watching for changes on the dynamic table *)
@@ -1457,7 +1463,7 @@ struct
     ( match c.gateway_forwards_path with
     | None -> Lwt.return_unit
     | Some path ->
-      begin match Host.Files.watch_file path
+      begin Host.Files.watch_file path
         (fun () ->
           Log.info (fun f -> f "Gateway forwards file %s has changed" path);
           Lwt.async (fun () ->
@@ -1466,15 +1472,18 @@ struct
                 read_gateway_forwards_file path
               )
           )
-        ) with
+        )
+      >>= function
       | Error (`Msg "ENOENT") ->
-        Log.info (fun f -> f "Not watching gateway forwards file %s because it does not exist" path)
+        Log.info (fun f -> f "Not watching gateway forwards file %s because it does not exist" path);
+        Lwt.return_unit
       | Error (`Msg m) ->
-        Log.err (fun f -> f "Failed to watch gateway forwards file %s for changes: %s" path m)
+        Log.err (fun f -> f "Failed to watch gateway forwards file %s for changes: %s" path m);
+        Lwt.return_unit
       | Ok _watch ->
-        Log.info (fun f -> f "Watching gateway forwards file %s for changes" path)
-      end;
-      Lwt.return_unit
+        Log.info (fun f -> f "Watching gateway forwards file %s for changes" path);
+        Lwt.return_unit
+      end
     ) >>= fun () ->
 
     Log.info (fun f -> f "Configuration %s" (Configuration.to_string c));
