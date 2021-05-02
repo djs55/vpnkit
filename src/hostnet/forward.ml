@@ -301,12 +301,11 @@ unix:<base64-encoded local path>:unix:<base64-encoded remote path>"
           >>= fun server ->
           t.server <- Some (`Tcp server);
           (* Resolve the local port yet (the fds are already bound) *)
+          Socket.Stream.Tcp.getsockname server
+          >>= fun (_, bound_port) ->
           t.local <- ( match t.local with
-            | `Tcp (ip, 0) ->
-              let _, port = Socket.Stream.Tcp.getsockname server in
-              `Tcp (ip, port)
-            | _ ->
-              t.local );
+            | `Tcp (ip, 0) -> `Tcp (ip, bound_port)
+            | _ -> t.local );
           start_tcp_proxy state (to_string t) t.remote_port server
           >|= fun () ->
           Ok t
@@ -334,12 +333,11 @@ unix:<base64-encoded local path>:unix:<base64-encoded remote path>"
           >>= fun server ->
           t.server <- Some (`Udp server);
           (* Resolve the local port yet (the fds are already bound) *)
+          Socket.Datagram.Udp.getsockname server
+          >>= fun (_, bound_port) ->
           t.local <- ( match t.local with
-            | `Udp (ip, 0) ->
-              let _, port = Socket.Datagram.Udp.getsockname server in
-              `Udp (ip, port)
-            | _ ->
-              t.local );
+            | `Udp (ip, 0) -> `Udp (ip, bound_port)
+            | _ -> t.local );
           start_udp_proxy (to_string t) t.remote_port server
           >|= fun () ->
           Ok t

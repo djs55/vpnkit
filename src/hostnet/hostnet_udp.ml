@@ -229,7 +229,8 @@ struct
                   >>= fun () ->
                   Udp.bind ~description:(description datagram) (Ipaddr.(V4 V4.any), 0)
                   >>= fun server ->
-                  let external_address = Udp.getsockname server in
+                  Udp.getsockname server
+                  >>= fun external_address ->
                   let last_use = Clock.elapsed_ns t.clock in
                   let flow = { description = d; src = datagram.src; server; external_address; last_use } in
                   Hashtbl.replace t.table datagram.src flow;

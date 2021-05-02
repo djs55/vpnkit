@@ -306,11 +306,11 @@ module Sockets = struct
 
       let getsockname { fd; _ } =
         match Luv.UDP.getsockname fd with
-        | Error _ -> invalid_arg "UDP.getsockname passed a non-UDP socket"
+        | Error _ -> Lwt.fail (Invalid_argument "UDP.getsockname passed a non-UDP socket")
         | Ok sockaddr ->
           begin match parse_sockaddr sockaddr with
-          | Error _ -> invalid_arg "UDP.getsockname unable to parse Sockaddr.t"
-          | Ok (ip, port) -> ip, port
+          | Error _ -> Lwt.fail (Invalid_argument "UDP.getsockname unable to parse Sockaddr.t")
+          | Ok (ip, port) -> Lwt.return (ip, port)
           end
 
       let shutdown server =
@@ -587,8 +587,8 @@ module Sockets = struct
         server.disable_connection_tracking <- true
 
       let getsockname server = match server.listening_fds with
-        | [] -> failwith "socket is closed"
-        | (_, fd) :: _ -> getsockname' fd
+        | [] -> Lwt.fail_with "socket is closed"
+        | (_, fd) :: _ -> Lwt.return (getsockname' fd)
 
       let bind_one ?(description="") (ip, port) =
         let label = match ip with
@@ -678,7 +678,7 @@ module Sockets = struct
       let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen server' cb =
-        let ip, port = getsockname server' in
+        let ip, port = getsockname' (snd @@ List.hd server'.listening_fds) in
         let label = label_of ip in
         let description = Fmt.strf "%s:%s:%d" label (Ipaddr.to_string ip) port in
         let handle_connection client () =
@@ -728,6 +728,12 @@ module Sockets = struct
 
       type address = string
 
+      let get_test_address () =
+        let i = Random.int 1_000_000 in
+        if Sys.os_type == "Windows"
+        then Printf.sprintf "\\\\.\\pipe\\vpnkittest%d" i
+        else Printf.sprintf "/tmp/vpnkittest.%d" i
+
       type flow = {
         idx: int;
         description: string;
@@ -748,31 +754,36 @@ module Sockets = struct
         let description = "unix:" ^ path in
         register_connection description
         >>= fun idx ->
-        begin match Luv.Pipe.init () with
-        | Error err ->
-          deregister_connection idx;
-          let msg = Fmt.strf "Pipe.connect %s: %s" path (Luv.Error.strerror err) in
-          Log.err (fun f -> f "%s" msg);
-          Lwt.fail_with msg
-        | Ok fd ->
-          let t, u = Luv_lwt.task () in
-          Luv.Pipe.connect fd path begin function
+        Luv_lwt.in_luv (fun return ->
+          match Luv.Pipe.init () with
           | Error err ->
-            deregister_connection idx;
-            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-          | Ok () -> Luv_lwt.wakeup_later u (Ok (of_fd ~description ~idx fd))
-          end;
-          t
-        end
+            let msg = Fmt.strf "Pipe.connect %s: %s" path (Luv.Error.strerror err) in
+            Log.err (fun f -> f "%s" msg);
+            return (Error (`Msg msg))
+          | Ok fd ->
+            Luv.Pipe.connect fd path begin function
+            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok () -> return (Ok (of_fd ~description ~idx fd))
+            end
+        ) >>= function
+        | Error e ->
+          deregister_connection idx;
+          Lwt.return (Error e)
+        | Ok x ->
+          Lwt.return (Ok x)
 
       let shutdown_read _ =
         Lwt.return ()
 
       let shutdown_write { fd; closed; _ } =
-        if not closed then Luv.Stream.shutdown fd begin function
-          | Error err -> Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err))
-          | Ok () -> ()
-        end;
+        if not closed
+        then
+          Lwt.async (fun () -> Luv_lwt.in_luv (fun _ ->
+            Luv.Stream.shutdown fd begin function
+              | Error err -> Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err))
+              | Ok () -> ()
+            end
+          ));
         Lwt.return_unit
 
       let read_into t buf = read_into t.fd buf
@@ -783,7 +794,9 @@ module Sockets = struct
       let close t =
         if not t.closed then begin
           t.closed <- true;
-          Luv.Handle.close t.fd ignore;
+          Lwt.async (fun () -> Luv_lwt.in_luv (fun _ ->
+            Luv.Handle.close t.fd ignore
+          ));
           deregister_connection t.idx;
         end;
         Lwt.return_unit
@@ -796,25 +809,32 @@ module Sockets = struct
       }
 
       let bind ?(description="") path =
-        Lwt.catch (fun () -> Lwt_unix.unlink path) (fun _ -> Lwt.return ())
-        >>= fun () ->
+        Luv_lwt.in_luv (fun return ->
+            Luv.File.unlink path return
+        ) >>= fun _ ->
         let description = Fmt.strf "unix:%s %s" path description in
         register_connection description >>= fun idx ->
-        match Luv.Pipe.init () with
-        | Error err -> Lwt.fail (Luv_lwt.Error err)
-        | Ok fd ->
-          begin match Luv.Pipe.bind fd path with
-          | Ok () ->
-            Lwt.return { idx; fd; closed = false;
-                        disable_connection_tracking = false }
-          | Error err ->
-            deregister_connection idx;
-            Lwt.fail (Luv_lwt.Error err)
-          end
+        Luv_lwt.in_luv (fun return ->
+          match Luv.Pipe.init () with
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok fd ->
+            begin match Luv.Pipe.bind fd path with
+            | Ok () ->
+              return (Ok { idx; fd; closed = false; disable_connection_tracking = false })
+            | Error err ->
+              return (Error (`Msg (Luv.Error.strerror err)))
+            end
+        ) >>= function
+        | Error (`Msg m) ->
+          deregister_connection idx;
+          Lwt.fail_with m
+        | Ok x -> Lwt.return x
 
-      let getsockname server = match Luv.Pipe.getsockname server.fd with
-      | Ok path -> path
-      | _ -> invalid_arg "Unix.sockname passed a non-Unix socket"
+      let getsockname server =
+        Luv_lwt.in_luv (fun return -> return (Luv.Pipe.getsockname server.fd))
+        >>= function
+        | Ok path -> Lwt.return path
+        | _ -> Lwt.fail (Invalid_argument "Unix.sockname passed a non-Unix socket")
 
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
@@ -822,8 +842,7 @@ module Sockets = struct
       let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen ({ fd; _ } as server') cb =
-        let handle_connection client () =
-          let description = "unix:" ^ getsockname server' in
+        let handle_connection (client, description) () =
           (if server'.disable_connection_tracking
            then Lwt.return @@
              register_connection_no_limit description
@@ -835,21 +854,26 @@ module Sockets = struct
               (fun () -> cb flow)
           ) (fun () -> close flow ) in
 
-        Luv.Stream.listen fd begin function
-        | Error err -> Log.err (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
-        | Ok () ->
-          let rec accept_forever () =
-            match Luv.Pipe.init () with
-            | Error err -> Log.err (fun f -> f "Pipe.init: %s"  (Luv.Error.strerror err))
-            | Ok client ->
-              begin match Luv.Stream.accept ~server:fd ~client with
-              | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
-              | Ok () ->
-                Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, client);
-                accept_forever ()
-              end in
-          accept_forever ()
-        end
+        Luv_lwt.run_in_luv (fun () ->
+          let description = "unix:" ^ (match Luv.Pipe.getsockname fd with
+            | Ok path -> path
+            | Error err -> "(error " ^ (Luv.Error.strerror err) ^ ")") in
+          Luv.Stream.listen fd begin function
+          | Error err -> Log.err (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
+          | Ok () ->
+            let rec accept_forever () =
+              match Luv.Pipe.init () with
+              | Error err -> Log.err (fun f -> f "Pipe.init: %s"  (Luv.Error.strerror err))
+              | Ok client ->
+                begin match Luv.Stream.accept ~server:fd ~client with
+                | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
+                | Ok () ->
+                  Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, (client, description));
+                  accept_forever ()
+                end in
+            accept_forever ()
+          end
+        )
 
       let of_bound_fd ?read_buffer_size:_ fd =
         let return_error err =
@@ -885,6 +909,38 @@ module Sockets = struct
     end
   end
 end
+
+module type ClientServer = sig
+  include Sig.FLOW_CLIENT
+  include Sig.FLOW_SERVER
+    with type address := address
+    and type flow := flow
+  val get_test_address: unit -> address
+end
+
+module TestServer(F: ClientServer) = struct
+  let one_connection () =
+    Luv_lwt.run begin
+      let address = F.get_test_address () in
+      F.bind address
+      >>= fun server ->
+      let connected = Lwt_mvar.create () in
+      F.listen server (fun flow ->
+        Lwt_mvar.put connected ()
+        >>= fun () ->
+        F.close flow
+      );
+      Lwt_mvar.take connected
+      >>= fun () ->
+      F.shutdown server
+    end
+end
+
+let%test_module "Sockets.Stream.Unix" = (module struct
+  module Tests = TestServer(Sockets.Stream.Unix)
+  let%test_unit "one Unix/Pipe connection" = Tests.one_connection ()
+end)
+
 
 module Files = struct
   let read_file path =

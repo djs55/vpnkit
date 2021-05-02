@@ -35,6 +35,8 @@ val run_in_lwt: (unit -> unit) -> unit -> unit
 (** [run_in_lwt f] runs [f ()] in the default Lwt event loop.
     This assumes that Lwt is not thread-safe and therefore we must interact with it from one thread. *)
 
+val in_luv: (('a -> unit) -> unit) -> 'a Lwt.t
+
 val run: 'a Lwt.t -> 'a
 (** [run t] evaluates [t] with the default Luv event loop. *)
 

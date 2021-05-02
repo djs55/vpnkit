@@ -39,7 +39,7 @@ module type FLOW_SERVER = sig
   val bind: ?description:string -> address -> server Lwt.t
   (** Bind a server to an address *)
 
-  val getsockname: server -> address
+  val getsockname: server -> address Lwt.t
   (** Query the address the server is bound to *)
 
   val disable_connection_tracking: server -> unit
@@ -55,6 +55,13 @@ module type FLOW_SERVER = sig
 
   val shutdown: server -> unit Lwt.t
   (** Stop accepting connections on the given server *)
+end
+
+module type FLOW_CLIENT_SERVER = sig
+  include FLOW_CLIENT
+  include FLOW_SERVER
+    with type address := address
+    and type flow := flow
 end
 
 module type SOCKETS = sig
@@ -82,12 +89,8 @@ module type SOCKETS = sig
     module Udp: sig
       type address = Ipaddr.t * int
 
-      include FLOW_CLIENT
+      include FLOW_CLIENT_SERVER
         with type address := address
-
-      include FLOW_SERVER
-        with type address := address
-         and type flow := flow
 
       val recvfrom: server -> Cstruct.t -> (int * address) Lwt.t
 
@@ -98,31 +101,23 @@ module type SOCKETS = sig
     module Tcp: sig
       type address = Ipaddr.t * int
 
-      include FLOW_CLIENT
+      include FLOW_CLIENT_SERVER
         with type address := address
 
       include READ_INTO
         with type flow := flow
          and type error := error
-
-      include FLOW_SERVER
-        with type address := address
-         and type flow := flow
     end
 
     module Unix: sig
       type address = string
 
-      include FLOW_CLIENT
+      include FLOW_CLIENT_SERVER
         with type address := address
 
       include READ_INTO
         with type flow := flow
          and type error := error
-
-      include FLOW_SERVER
-        with type address := address
-         and type flow := flow
 
       val unsafe_get_raw_fd: flow -> Unix.file_descr
       (** Return the underlying fd. This is intended for careful integration

@@ -81,6 +81,12 @@ let to_lwt_default_loop = Run_in_lwt.make (fun f -> f ())
 
 let run_in_lwt f () = Run_in_lwt.push to_lwt_default_loop f
 
+let in_luv f =
+  let t, u = Lwt.task () in
+  let wakeup_later x = run_in_lwt (fun () -> Lwt.wakeup_later u x) () in
+  run_in_luv (fun () -> f wakeup_later);
+  t
+
 let run t =
   (* Hopefully it's ok to create the async handle in this thread, even though the
      main loop runs in another thread. *)
