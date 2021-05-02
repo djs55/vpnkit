@@ -75,6 +75,8 @@ module Run_in_luv = Work_queue(Luv_notification)
 
 let default_loop = Run_in_luv.make (fun f -> f ())
 
+let run_in_luv f = Run_in_luv.push default_loop f
+
 let run t =
   (* Hopefully it's ok to create the async handle in this thread, even though the
      main loop runs in another thread. *)

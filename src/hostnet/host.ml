@@ -949,16 +949,15 @@ module Time = struct
   type 'a io = 'a Lwt.t
   let sleep_ns ns =
     let t, u = Luv_lwt.task () in
-    Luv_lwt.(Run_in_luv.push default_loop (fun () ->
+    Luv_lwt.run_in_luv (fun () ->
       let timer = Luv.Timer.init () |> Result.get_ok in
       ignore (Luv.Timer.start timer (Duration.to_ms ns) (fun () ->
         Luv_lwt.wakeup_later u ()
       ));
-    ));
+    );
     t
 
   let%test "Time.sleep_ns wakes up" =
-  Printf.printf "sleep_ns\n%!";
     let t = sleep_ns (Duration.of_ms 100) in
     let start = Unix.gettimeofday () in
     Luv_lwt.run t;
