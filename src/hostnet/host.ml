@@ -888,7 +888,7 @@ end
 
 module Files = struct
   let read_file path =
-    let t, u = Luv_lwt.task () in
+    let t, u = Lwt.task () in
 
     let close h = Luv.File.close h
       (function
@@ -904,23 +904,43 @@ module Files = struct
           | Ok n ->
             if n = Unsigned.Size_t.zero then begin
               close h;
-              Luv_lwt.wakeup_later u (Ok (Buffer.contents buf))
+              Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Ok (Buffer.contents buf))) ()
             end else begin
               Luv.Buffer.(sub frag ~offset:0 ~length:(Unsigned.Size_t.to_int n) |> to_bytes) |> Buffer.add_bytes buf;
               loop h
             end
           | Error err ->
             close h;
-            Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+            Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))) ()
         ) in
-    Luv.File.open_ path [ `RDONLY ]
-      (function
-      | Error err ->
-        Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-      | Ok h ->
-        loop h
-      );
+    Luv_lwt.run_in_luv (fun () ->
+      Luv.File.open_ path [ `RDONLY ]
+        (function
+        | Error err ->
+          Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))) ()
+        | Ok h ->
+          loop h
+        )
+    );
     t
+
+  let%test "read a file" =
+    let expected = Buffer.create 8192 in
+    for i = 0 to 1024 do
+      Buffer.add_int64_be expected (Int64.of_int i)
+    done;
+    let filename = Filename.temp_file "vpnkit" "file" in
+    let oc = open_out_bin filename in
+    output_string oc (Buffer.contents expected);
+    close_out oc;
+    Luv_lwt.run begin
+      read_file filename
+      >>= fun result ->
+      Sys.remove filename;
+      match result with
+      | Error (`Msg m) -> failwith m
+      | Ok actual -> Lwt.return (Buffer.contents expected = actual)
+    end
 
   type watch = {
     h: [ `FS_event ] Luv.Handle.t;
