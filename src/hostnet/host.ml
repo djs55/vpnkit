@@ -511,39 +511,49 @@ module Sockets = struct
         | None ->
           errorf "Socket.%s.connect %s: hit connection limit" label description
         | Some idx ->
-          let return_error err =
-            deregister_connection idx;
-            let msg = Fmt.strf "Socket.%s.connect %s:%d: %s" label (Ipaddr.to_string ip) port (Luv.Error.strerror err) in
-            Log.err (fun f -> f "%s" msg);
-            Lwt.return (Error (`Msg msg)) in
-          begin match Luv.TCP.init () with
-          | Error err -> return_error err
-          | Ok fd ->
-            begin match make_sockaddr (ip, port) with
-            | Error err ->
-              Luv.Handle.close fd ignore;
-              return_error err
-            | Ok sockaddr ->
-              let t, u = Luv_lwt.task () in
-              Luv.TCP.connect fd sockaddr (Luv_lwt.wakeup_later u);
-              t >>= function
+          begin Luv_lwt.in_luv (fun return ->
+            match Luv.TCP.init () with
+            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok fd ->
+              begin match make_sockaddr (ip, port) with
               | Error err ->
                 Luv.Handle.close fd ignore;
-                return_error err
-              | Ok () ->
-                Lwt.return (Ok (of_fd ~description ~idx ~label fd))
-            end
+                return (Error (`Msg (Luv.Error.strerror err)))
+              | Ok sockaddr ->
+                Luv.TCP.connect fd sockaddr begin function
+                | Error err ->
+                  Luv.Handle.close fd ignore;
+                  return (Error (`Msg (Luv.Error.strerror err)))
+                | Ok () ->
+                  return (Ok fd)
+                end
+              end
+          ) >>= function
+          | Error (`Msg m) ->
+            deregister_connection idx;
+            let msg = Fmt.strf "Socket.%s.connect %s:%d: %s" label (Ipaddr.to_string ip) port m in
+            Log.err (fun f -> f "%s" msg);
+            Lwt.return (Error (`Msg msg))
+          | Ok fd ->
+            Lwt.return (Ok (of_fd ~description ~idx ~label fd))
           end
 
       let shutdown_read _ =
         Lwt.return ()
 
       let shutdown_write { label; fd; closed; _ } =
-        if not closed then Luv.Stream.shutdown fd begin function
-          | Error err -> Log.err (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err))
-          | Ok () -> ()
-        end;
-        Lwt.return_unit
+        if not closed
+          then
+            Luv_lwt.in_luv (fun return ->
+              Luv.Stream.shutdown fd begin function
+                | Error err ->
+                  Log.err (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err));
+                  return ()
+                | Ok () ->
+                  return ()
+              end
+            )
+          else Lwt.return_unit
 
       let read_into t buf = read_into t.fd buf
       let read t = read t.fd
@@ -553,10 +563,11 @@ module Sockets = struct
       let close t =
         if not t.closed then begin
           t.closed <- true;
-          Luv.Handle.close t.fd ignore;
+          Luv_lwt.in_luv (Luv.Handle.close t.fd)
+          >>= fun () ->
           deregister_connection t.idx;
-        end;
-        Lwt.return_unit
+          Lwt.return_unit
+        end else Lwt.return_unit
 
       type server = {
         label: string;
@@ -564,7 +575,7 @@ module Sockets = struct
         mutable disable_connection_tracking: bool;
       }
 
-      let getsockname' fd = match Luv.TCP.getsockname fd with
+      let getsockname_in_luv fd = match Luv.TCP.getsockname fd with
         | Error _ -> invalid_arg "Tcp.getsockname passed a non-TCP socket"
         | Ok sockaddr ->
           begin match parse_sockaddr sockaddr with
@@ -577,18 +588,25 @@ module Sockets = struct
         | Ipaddr.V6 _ -> "TCPv6"
 
       let make ?read_buffer_size:_ listening_fds =
-        let label = match listening_fds with
-        | [] -> failwith "socket is closed"
-        | (_, fd) :: _ -> label_of @@ fst @@ getsockname' fd in
-        { label; listening_fds;
+        ( match listening_fds with
+          | [] -> Lwt.fail_with "socket is closed"
+          | (_, fd) :: _ -> Lwt.return fd )
+        >>= fun fd ->
+        Luv_lwt.in_luv (fun return -> return @@ getsockname_in_luv fd)
+        >>= fun sockname ->
+        let label = label_of @@ fst sockname in
+        Lwt.return { label; listening_fds;
           disable_connection_tracking = false }
 
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
-      let getsockname server = match server.listening_fds with
-        | [] -> Lwt.fail_with "socket is closed"
-        | (_, fd) :: _ -> Lwt.return (getsockname' fd)
+      let getsockname server =
+        ( match server.listening_fds with
+          | [] -> Lwt.fail_with "socket is closed"
+          | (_, fd) :: _ -> Lwt.return fd )
+        >>= fun fd ->
+        Luv_lwt.in_luv (fun return -> return @@ getsockname_in_luv fd)
 
       let bind_one ?(description="") (ip, port) =
         let label = match ip with
@@ -598,39 +616,39 @@ module Sockets = struct
           Fmt.strf "tcp:%a:%d %s" Ipaddr.pp_hum ip port description
         in
         register_connection description >>= fun idx ->
-        let return_error err =
-          deregister_connection idx;
-          let msg = Fmt.strf "Socket.%s.bind_one %s:%d: %s" label (Ipaddr.to_string ip) port (Luv.Error.strerror err) in
-          Log.err (fun f -> f "%s" msg);
-          Lwt.return (Error (`Msg msg)) in
-        match Luv.TCP.init() with
-        | Error err -> return_error err
-        | Ok fd ->
-          begin match make_sockaddr (ip, port) with
-          | Error err ->
-            Luv.Handle.close fd ignore;
-            return_error err
-          | Ok sockaddr ->
-            begin match Luv.TCP.bind fd sockaddr with
+        Luv_lwt.in_luv (fun return ->
+          match Luv.TCP.init() with
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok fd ->
+            begin match make_sockaddr (ip, port) with
             | Error err ->
-              Luv.Handle.close fd ignore;
-              return_error err
-            | Ok () ->
-              (* Determine the local port number if the user requested INADDR_ANY *)
-              begin match Luv.TCP.getsockname fd with
+              Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+            | Ok sockaddr ->
+              begin match Luv.TCP.bind fd sockaddr with
               | Error err ->
-                Luv.Handle.close fd ignore;
-                return_error err
-              | Ok sockaddr ->
-                begin match parse_sockaddr sockaddr with
+                Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+              | Ok () ->
+                (* Determine the local port number if the user requested INADDR_ANY *)
+                begin match Luv.TCP.getsockname fd with
                 | Error err ->
-                  Luv.Handle.close fd ignore;
-                  return_error err
-                | Ok (_, port) -> Lwt.return (Ok (idx, label, fd, port))
+                  Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+                | Ok sockaddr ->
+                  begin match parse_sockaddr sockaddr with
+                  | Error err ->
+                    Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+                  | Ok (_, port) -> return (Ok (idx, label, fd, port))
+                  end
                 end
               end
             end
-          end
+        ) >>= function
+        | Error (`Msg m) ->
+          deregister_connection idx;
+          let msg = Fmt.strf "Socket.%s.bind_one %s:%d: %s" label (Ipaddr.to_string ip) port m in
+          Log.err (fun f -> f "%s" msg);
+          Lwt.return (Error (`Msg m))
+        | Ok x ->
+          Lwt.return (Ok x)
 
       let bind ?description (ip, port) =
         bind_one ?description (ip, port)
@@ -658,16 +676,15 @@ module Sockets = struct
                 f "Ignoring failed bind to ::1:%d (%a)" local_port Fmt.exn e);
             Lwt.return []
           )
-        >|= fun extra ->
+        >>= fun extra ->
         make ((idx, fd) :: extra)
 
       let shutdown server =
         let fds = server.listening_fds in
         server.listening_fds <- [];
         Lwt_list.iter_s (fun (idx, fd) ->
-          let t, u = Luv_lwt.task () in
-          Luv.Handle.close fd (Luv_lwt.wakeup_later u);
-          t >>= fun () ->
+          Luv_lwt.in_luv (Luv.Handle.close fd)
+          >>= fun () ->
           deregister_connection idx;
           Lwt.return_unit
         ) fds
@@ -678,10 +695,7 @@ module Sockets = struct
       let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
 
       let listen server' cb =
-        let ip, port = getsockname' (snd @@ List.hd server'.listening_fds) in
-        let label = label_of ip in
-        let description = Fmt.strf "%s:%s:%d" label (Ipaddr.to_string ip) port in
-        let handle_connection client () =
+        let handle_connection (client, label, description) () =
           (if server'.disable_connection_tracking
            then Lwt.return @@
              register_connection_no_limit description
@@ -694,32 +708,37 @@ module Sockets = struct
           ) (fun () -> close flow ) in
 
         List.iter (fun (_, fd) ->
-          Luv.Stream.listen fd begin function
-          | Error err -> Log.err (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
-          | Ok () ->
-            let rec accept_forever () =
-              match Luv.TCP.init () with
-              | Error err -> Log.err (fun f -> f "TCP.init: %s"  (Luv.Error.strerror err))
-              | Ok client ->
-                let error msg err =
-                  Log.err (fun f -> f "Socket.%s.listen %s: %s" label msg (Luv.Error.strerror err));
-                  Luv.Handle.close client ignore in
-                begin match Luv.Stream.accept ~server:fd ~client with
-                | Error err -> error "accept" err
-                | Ok () ->
-                  begin match Luv.TCP.nodelay client true with
-                  | Error err -> error "nodelay" err
+          Luv_lwt.run_in_luv (fun () ->
+            let ip, port = getsockname_in_luv fd in
+            let label = label_of ip in
+            let description = Fmt.strf "%s:%s:%d" label (Ipaddr.to_string ip) port in
+            Luv.Stream.listen fd begin function
+            | Error err -> Log.err (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
+            | Ok () ->
+              let rec accept_forever () =
+                match Luv.TCP.init () with
+                | Error err -> Log.err (fun f -> f "TCP.init: %s"  (Luv.Error.strerror err))
+                | Ok client ->
+                  let error msg err =
+                    Log.err (fun f -> f "Socket.%s.listen %s: %s" label msg (Luv.Error.strerror err));
+                    Luv.Handle.close client ignore in
+                  begin match Luv.Stream.accept ~server:fd ~client with
+                  | Error err -> error "accept" err
                   | Ok () ->
-                    begin match Luv.TCP.keepalive client (Some 1) with
-                    | Error err -> error "keepalive" err
+                    begin match Luv.TCP.nodelay client true with
+                    | Error err -> error "nodelay" err
                     | Ok () ->
-                      Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, client);
-                      accept_forever ()
+                      begin match Luv.TCP.keepalive client (Some 1) with
+                      | Error err -> error "keepalive" err
+                      | Ok () ->
+                        Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, (client, label, description));
+                        accept_forever ()
+                      end
                     end
-                  end
-                end in
-            accept_forever ()
-          end
+                  end in
+              accept_forever ()
+            end
+          )
         ) server'.listening_fds
     end
 
@@ -778,13 +797,16 @@ module Sockets = struct
       let shutdown_write { fd; closed; _ } =
         if not closed
         then
-          Lwt.async (fun () -> Luv_lwt.in_luv (fun _ ->
+          Luv_lwt.in_luv (fun return ->
             Luv.Stream.shutdown fd begin function
-              | Error err -> Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err))
-              | Ok () -> ()
+              | Error err ->
+                Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err));
+                return ()
+              | Ok () ->
+                return ()
             end
-          ));
-        Lwt.return_unit
+          )
+        else Lwt.return_unit
 
       let read_into t buf = read_into t.fd buf
       let read t = read t.fd
@@ -794,12 +816,11 @@ module Sockets = struct
       let close t =
         if not t.closed then begin
           t.closed <- true;
-          Lwt.async (fun () -> Luv_lwt.in_luv (fun _ ->
-            Luv.Handle.close t.fd ignore
-          ));
+          Luv_lwt.in_luv (Luv.Handle.close t.fd)
+          >>= fun () ->
           deregister_connection t.idx;
-        end;
-        Lwt.return_unit
+          Lwt.return_unit
+        end else Lwt.return_unit
 
       type server = {
         idx: int;
