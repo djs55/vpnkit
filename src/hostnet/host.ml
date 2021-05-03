@@ -1127,9 +1127,9 @@ module Dns = struct
         ) [] x
 
   let%test "getaddrinfo dave.recoil.org" =
-    let t = getaddrinfo "dave.recoil.org" `INET in
     Luv_lwt.run begin
-      t >>= fun ips ->
+      getaddrinfo "dave.recoil.org" `INET
+      >>= fun ips ->
       Lwt.return (ips <> [])
     end
 
