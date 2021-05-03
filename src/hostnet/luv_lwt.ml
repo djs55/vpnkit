@@ -75,16 +75,16 @@ module Run_in_luv = Work_queue(Luv_notification)
 
 let to_luv_default_loop = Run_in_luv.make (fun f -> f ())
 
-let run_in_luv = Run_in_luv.push to_luv_default_loop
-
 let to_lwt_default_loop = Run_in_lwt.make (fun f -> f ())
 
-let run_in_lwt f () = Run_in_lwt.push to_lwt_default_loop f
+let in_lwt_async f = Run_in_lwt.push to_lwt_default_loop f
+
+let in_luv_async = Run_in_luv.push to_luv_default_loop
 
 let in_luv f =
   let t, u = Lwt.task () in
-  let wakeup_later x = run_in_lwt (fun () -> Lwt.wakeup_later u x) () in
-  run_in_luv (fun () -> f wakeup_later);
+  let wakeup_later x = in_lwt_async (fun () -> Lwt.wakeup_later u x) in
+  in_luv_async (fun () -> f wakeup_later);
   t
 
 let run t =
@@ -103,34 +103,10 @@ let run t =
   Thread.join luv;
   result
 
-let unit_wakeup_later = Run_in_lwt.make (fun x -> Lwt.wakeup_later x ())
- 
-(* Wrap the result value here. *)
-type 'a u = {
-  result: 'a option ref;
-  u: unit Lwt.u;
-}
-
-let task () =
-  let result = ref None in
-  let t, u = Lwt.task () in
-  let u = { result; u; } in
-  Lwt.bind t (fun () ->
-    match !result with
-    | None -> Lwt.fail_with "task wakeup with no value"
-    | Some x -> Lwt.return x
-  ), u
-
-let wakeup_later u x =
-  u.result := Some x;
-  Run_in_lwt.push unit_wakeup_later u.u
-
-exception Error of Luv.Error.t
-
 let%test "wakeup one task from a luv callback" =
-  let t, u = task () in
+  let t, u = Lwt.task () in
   let luv = Thread.create (fun () ->
-    wakeup_later u ()
+    in_lwt_async (Lwt.wakeup_later u)
     ) () in
   Thread.join luv;
   Lwt_main.run t;
@@ -138,12 +114,12 @@ let%test "wakeup one task from a luv callback" =
 
 let%test "wakeup lots of tasks from a luv callback" =
   let n = 1000 in
-  let tasks = Array.init n (fun _ -> task ()) |> Array.to_list in
+  let tasks = Array.init n (fun _ -> Lwt.task ()) |> Array.to_list in
   List.iteri (fun i (_, u) ->
     let _: Thread.t = Thread.create (fun i ->
       (* Introduce jitter *)
       Thread.delay 0.5;
-      wakeup_later u i
+      in_lwt_async (fun () -> Lwt.wakeup_later u i)
       ) i in
     ()
   ) tasks;

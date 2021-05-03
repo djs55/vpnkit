@@ -704,10 +704,8 @@ module Sockets = struct
       let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "TCP.of_bound_fd not implemented"
 
-      let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
-
       let listen server' cb =
-        let handle_connection (client, label, description) () =
+        let handle_connection client label description =
           (if server'.disable_connection_tracking
            then Lwt.return @@
              register_connection_no_limit description
@@ -720,7 +718,7 @@ module Sockets = struct
           ) (fun () -> close flow ) in
 
         List.iter (fun (_, fd) ->
-          Luv_lwt.run_in_luv (fun () ->
+          Luv_lwt.in_luv_async (fun () ->
             let ip, port = getsockname_in_luv fd in
             let label = label_of ip in
             let description = Fmt.strf "%s:%s:%d" label (Ipaddr.to_string ip) port in
@@ -743,7 +741,7 @@ module Sockets = struct
                       begin match Luv.TCP.keepalive client (Some 1) with
                       | Error err -> error "keepalive" err
                       | Ok () ->
-                        Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, (client, label, description));
+                        Luv_lwt.in_lwt_async (fun () -> Lwt.async (fun () -> handle_connection client label description));
                         accept_forever ()
                       end
                     end
@@ -872,10 +870,8 @@ module Sockets = struct
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
-      let accept_queue = Luv_lwt.Run_in_lwt.make (fun (cb, pipe) -> Lwt.async (cb pipe))
-
       let listen ({ fd; _ } as server') cb =
-        let handle_connection (client, description) () =
+        let handle_connection client description =
           (if server'.disable_connection_tracking
            then Lwt.return @@
              register_connection_no_limit description
@@ -887,7 +883,7 @@ module Sockets = struct
               (fun () -> cb flow)
           ) (fun () -> close flow ) in
 
-        Luv_lwt.run_in_luv (fun () ->
+        Luv_lwt.in_luv_async (fun () ->
           let description = "unix:" ^ (match Luv.Pipe.getsockname fd with
             | Ok path -> path
             | Error err -> "(error " ^ (Luv.Error.strerror err) ^ ")") in
@@ -901,7 +897,7 @@ module Sockets = struct
                 begin match Luv.Stream.accept ~server:fd ~client with
                 | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
                 | Ok () ->
-                  Luv_lwt.Run_in_lwt.push accept_queue (handle_connection, (client, description));
+                  Luv_lwt.in_lwt_async (fun () -> Lwt.async (fun () -> handle_connection client description));
                   accept_forever ()
                 end in
             accept_forever ()
@@ -1046,7 +1042,7 @@ module Files = struct
       Luv.FS_event.start h path
         (function
         | Ok _ ->
-          Luv_lwt.run_in_lwt callback ();
+          Luv_lwt.in_lwt_async callback;
         | Error err ->
           Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
       return (Ok { h })
