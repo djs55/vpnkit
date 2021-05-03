@@ -902,9 +902,8 @@ module Sockets = struct
       let shutdown server =
         if not server.closed then begin
           server.closed <- true;
-          let t, u = Luv_lwt.task () in
-          Luv.Handle.close server.fd (Luv_lwt.wakeup_later u);
-          t >>= fun () ->
+          Luv_lwt.in_luv (Luv.Handle.close server.fd)
+          >>= fun () ->
           deregister_connection server.idx;
           Lwt.return_unit
         end else
