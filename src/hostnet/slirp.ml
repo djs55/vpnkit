@@ -1021,14 +1021,16 @@ struct
     let endpoints = IPMap.empty in
     let endpoints_m = Lwt_mutex.create () in
     let udp_nat = Udp_nat.create clock in
-    let icmp_nat = match Icmp_nat.create clock with
-      | icmp_nat -> Some icmp_nat
-      | exception Unix.Unix_error (Unix.EPERM, _, _) ->
-        Log.err (fun f -> f "Permission denied setting up user-space ICMP socket: ping will not work");
-        None
-      | exception e ->
-        Log.err (fun f -> f "Unexpected exception %s setting up user-space ICMP socket: ping will not work" (Printexc.to_string e));
-        None in
+    Lwt.catch
+      (fun () -> Icmp_nat.create clock >>= fun x -> Lwt.return (Some x))
+      (function
+        | Unix.Unix_error (Unix.EPERM, _, _) ->
+          Log.err (fun f -> f "Permission denied setting up user-space ICMP socket: ping will not work");
+          Lwt.return None
+        | e ->
+          Log.err (fun f -> f "Unexpected exception %s setting up user-space ICMP socket: ping will not work" (Printexc.to_string e));
+          Lwt.return None)
+    >>= fun icmp_nat ->
     let t = {
       vnet_client_id;
       after_disconnect = Vmnet.after_disconnect x;

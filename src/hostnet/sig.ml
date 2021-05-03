@@ -32,7 +32,7 @@ module type FLOW_SERVER = sig
 
   type address
 
-  val of_bound_fd: ?read_buffer_size:int -> Unix.file_descr -> server
+  val of_bound_fd: ?read_buffer_size:int -> Unix.file_descr -> server Lwt.t
   (** Create a server from a file descriptor bound to a Unix domain socket
       by some other process and passed to us. *)
 

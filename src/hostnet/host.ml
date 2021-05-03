@@ -876,25 +876,28 @@ module Sockets = struct
         )
 
       let of_bound_fd ?read_buffer_size:_ fd =
-        let return_error err =
-          let msg = Fmt.strf "Pipe.of_bound_fd: %s" (Luv.Error.strerror err) in
-          Log.err (fun f -> f "%s" msg);
-          failwith msg in
-        match file_of_file_descr fd with
-        | Error err -> return_error err
-        | Ok file ->
-          let fd = Luv.Pipe.init () |> Result.get_ok in
-          begin match Luv.Pipe.open_ fd file with
-          | Error err ->
-            Luv.Handle.close fd ignore;
-            return_error err
-          | Ok () ->
-            let description = match Luv.Pipe.getsockname fd with
-              | Ok path -> "unix:" ^ path
-              | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
-              let idx = register_connection_no_limit description in
-              { idx; fd; closed = false; disable_connection_tracking = false }
-          end
+        Luv_lwt.in_luv (fun return ->
+          match file_of_file_descr fd with
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok file ->
+            let fd = Luv.Pipe.init () |> Result.get_ok in
+            begin match Luv.Pipe.open_ fd file with
+            | Error err ->
+              Luv.Handle.close fd ignore;
+              return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok () ->
+              let description = match Luv.Pipe.getsockname fd with
+                | Ok path -> "unix:" ^ path
+                | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
+              return (Ok (description, fd))
+            end
+        ) >>= function
+        | Error (`Msg m) ->
+          Log.err (fun f -> f "%s" m);
+          failwith m
+        | Ok (description, fd) ->
+          let idx = register_connection_no_limit description in
+          Lwt.return { idx; fd; closed = false; disable_connection_tracking = false }
 
       let shutdown server =
         if not server.closed then begin
