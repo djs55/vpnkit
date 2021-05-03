@@ -437,49 +437,48 @@ module Sockets = struct
     (* Common across TCP and Pipes *)
 
     let read_into fd buf =
-      let buffer = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
-      let result, u = Luv_lwt.task () in
-      Luv.Stream.read_start ~allocate:(fun _suggested -> buffer) fd begin function
-        | Ok b ->
-          let n = Luv.Buffer.size buffer - (Luv.Buffer.size b) in
-          if n == 0 then begin
-            match Luv.Stream.read_stop fd with
-            | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data ()))
-            | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-          end
-        | Error err ->
-          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-        end;
-      result
+      Luv_lwt.in_luv (fun return ->
+        let buffer = Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len in
+        Luv.Stream.read_start ~allocate:(fun _suggested -> buffer) fd begin function
+          | Ok b ->
+            let n = Luv.Buffer.size buffer - (Luv.Buffer.size b) in
+            if n == 0 then begin
+              match Luv.Stream.read_stop fd with
+              | Ok () -> return (Ok (`Data ()))
+              | Error err ->return (Error (`Msg (Luv.Error.strerror err)))
+            end
+          | Error err ->
+            return (Error (`Msg (Luv.Error.strerror err)))
+        end
+      )
 
     let read fd =
-      let result, u = Luv_lwt.task () in
-      Luv.Stream.read_start fd begin function
-      | Ok buf ->
-        begin match Luv.Stream.read_stop fd with
-        | Ok () -> Luv_lwt.wakeup_later u (Ok (`Data (Cstruct.of_bigarray buf)))
-        | Error err -> Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
+      Luv_lwt.in_luv (fun return ->
+        Luv.Stream.read_start fd begin function
+        | Ok buf ->
+          begin match Luv.Stream.read_stop fd with
+          | Ok () -> return (Ok (`Data (Cstruct.of_bigarray buf)))
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          end
+        | Error err ->
+          return (Error (`Msg (Luv.Error.strerror err)))
         end
-      | Error err ->
-        Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-      end;
-      result
+      )
 
     let writev fd bufs =
       let buffers = List.map (fun buf -> Luv.Buffer.sub buf.Cstruct.buffer ~offset:buf.Cstruct.off ~length:buf.Cstruct.len) bufs in
-      let result, u = Luv_lwt.task () in
-      let rec loop buffers =
-        if Luv.Buffer.total_size buffers == 0
-        then Luv_lwt.wakeup_later u (Ok ())
-        else Luv.Stream.write fd buffers begin fun r n -> match r with
-        | Error err ->
-          Luv_lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))
-        | Ok () ->
-          loop (Luv.Buffer.drop buffers n)
-        end in
-      loop buffers;
-      result
-
+      Luv_lwt.in_luv (fun return ->
+        let rec loop buffers =
+          if Luv.Buffer.total_size buffers == 0
+          then return (Ok ())
+          else Luv.Stream.write fd buffers begin fun r n -> match r with
+          | Error err ->
+            return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok () ->
+            loop (Luv.Buffer.drop buffers n)
+          end in
+        loop buffers
+      )
 
     module Tcp = struct
       include Common
