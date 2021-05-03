@@ -979,41 +979,37 @@ end)
 
 module Files = struct
   let read_file path =
-    let t, u = Lwt.task () in
-
-    let close h = Luv.File.close h
-      (function
-      | Ok () -> ()
-      | Error err -> Log.err (fun f -> f "closing: %s" (Luv.Error.err_name err))) in
-
     (* Caller wants a string *)
     let buf = Buffer.create 4096 in
     let frag = Luv.Buffer.create 4096 in
-    let rec loop h =
-      Luv.File.read h [ frag ]
-        (function
-          | Ok n ->
-            if n = Unsigned.Size_t.zero then begin
-              close h;
-              Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Ok (Buffer.contents buf))) ()
-            end else begin
-              Luv.Buffer.(sub frag ~offset:0 ~length:(Unsigned.Size_t.to_int n) |> to_bytes) |> Buffer.add_bytes buf;
-              loop h
-            end
-          | Error err ->
-            close h;
-            Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))) ()
-        ) in
-    Luv_lwt.run_in_luv (fun () ->
+    Luv_lwt.in_luv (fun return ->
+      let rec loop h =
+        Luv.File.read h [ frag ]
+          (function
+            | Ok n ->
+              if n = Unsigned.Size_t.zero then begin
+                Luv.File.close h begin function
+                | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+                | Ok () -> return (Ok (Buffer.contents buf))
+                end
+              end else begin
+                Luv.Buffer.(sub frag ~offset:0 ~length:(Unsigned.Size_t.to_int n) |> to_bytes) |> Buffer.add_bytes buf;
+                loop h
+              end
+            | Error err ->
+              Luv.File.close h begin function
+              | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+              | Ok () -> return (Error (`Msg (Luv.Error.strerror err)))
+              end
+          ) in
       Luv.File.open_ path [ `RDONLY ]
         (function
         | Error err ->
-          Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Error (`Msg (Luv.Error.strerror err)))) ()
+          return (Error (`Msg (Luv.Error.strerror err)))
         | Ok h ->
           loop h
         )
-    );
-    t
+    )
 
   let%test "read a file" =
     let expected = Buffer.create 8192 in
@@ -1038,11 +1034,13 @@ module Files = struct
   }
 
   let unwatch w =
-    Luv.FS_event.stop w.h |> Result.get_ok
+    Luv_lwt.in_luv (fun return ->
+      Luv.FS_event.stop w.h |> Result.get_ok;
+      return ()
+    )
 
   let watch_file path callback =
-    let t, u = Lwt.task () in
-    Luv_lwt.run_in_luv (fun () ->
+    Luv_lwt.in_luv (fun return ->
       let h = Luv.FS_event.init () |> Result.get_ok in
 
       Luv.FS_event.start h path
@@ -1051,9 +1049,8 @@ module Files = struct
           Luv_lwt.run_in_lwt callback ();
         | Error err ->
           Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
-      Luv_lwt.run_in_lwt (fun () -> Lwt.wakeup_later u (Ok { h })) ()
-    );
-    t
+      return (Ok { h })
+    )
 
   let%test "watch a file" =
     let filename = Filename.temp_file "vpnkit" "file" in
@@ -1079,7 +1076,8 @@ module Files = struct
         >>= fun () ->
         close_out oc;
         Sys.remove filename;
-        unwatch w;
+        unwatch w
+        >>= fun () ->
         Lwt.return true
     end
 end
@@ -1087,17 +1085,18 @@ end
 module Time = struct
   type 'a io = 'a Lwt.t
   let sleep_ns ns =
-    let t, u = Lwt.task () in
-    Luv_lwt.run_in_luv (fun () ->
+    Luv_lwt.in_luv (fun return ->
       let timer = Luv.Timer.init () |> Result.get_ok in
-      ignore @@ Luv.Timer.start timer (Duration.to_ms ns) @@ Luv_lwt.run_in_lwt @@ Lwt.wakeup_later u;
-    );
-    t
+      match Luv.Timer.start timer (Duration.to_ms ns) (fun () -> return (Ok ())) with
+      | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+      | Ok () -> ()
+    ) >>= function
+    | Error (`Msg m) -> Lwt.fail_with m
+    | Ok () -> Lwt.return_unit
 
   let%test "Time.sleep_ns wakes up" =
-    let t = sleep_ns (Duration.of_ms 100) in
     let start = Unix.gettimeofday () in
-    Luv_lwt.run t;
+    Luv_lwt.run @@ sleep_ns @@ Duration.of_ms 100;
     let duration = Unix.gettimeofday () -. start in
     duration >= 0.1
 end

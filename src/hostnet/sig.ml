@@ -140,7 +140,7 @@ module type FILES = sig
   (** [watch_file path callback] executes [callback] whenever the contents of
       [path] may have changed. *)
 
-  val unwatch: watch -> unit
+  val unwatch: watch -> unit Lwt.t
   (** [unwatch watch] stops watching the path(s) associated with [watch] *)
 end
 

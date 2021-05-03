@@ -16,7 +16,7 @@ module Make(Files: Sig.FILES): sig
       background. The [?path] argument allows the location of the hosts file
       to be overriden. *)
 
-  val unwatch: watch -> unit
+  val unwatch: watch -> unit Lwt.t
   (** Stop watching the hosts file *)
 
 end
