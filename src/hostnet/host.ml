@@ -1104,16 +1104,13 @@ end
 
 
 module Dns = struct
-  (* FIXME: error handling completely missing *)
   let getaddrinfo node family =
-    let t, u = Luv_lwt.task () in
-    Luv.DNS.getaddrinfo ~family ~node () (Luv_lwt.wakeup_later u);
-    t >>= function
-    | Error _ ->
-      Lwt.return []
-    | Ok x ->
-      Lwt.return @@
-      List.fold_left (fun acc addr_info -> match addr_info.Luv.DNS.Addr_info.family with
+    Luv_lwt.in_luv (fun return ->
+      Luv.DNS.getaddrinfo ~family ~node () begin function
+      | Error err ->
+        return (Error (`Msg (Luv.Error.strerror err)))
+      | Ok x ->
+        let ips = List.fold_left (fun acc addr_info -> match addr_info.Luv.DNS.Addr_info.family with
         |  `INET ->
           begin match Luv.Sockaddr.to_string addr_info.Luv.DNS.Addr_info.addr with
           | None -> acc
@@ -1124,7 +1121,15 @@ module Dns = struct
             end
           end
         | _ -> acc
-        ) [] x
+        ) [] x in
+        return (Ok ips)
+      end
+    ) >>= function
+    | Error (`Msg _) ->
+      (* FIXME: error handling completely missing *)
+      Lwt.return []
+    | Ok ips ->
+      Lwt.return ips
 
   let%test "getaddrinfo dave.recoil.org" =
     Luv_lwt.run begin
