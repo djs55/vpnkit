@@ -39,6 +39,8 @@ module Work_queue(N: Notification) : Remote_work_queue = struct
     pending: 'a Queue.t;
     run: 'a -> unit;
     mutable n: N.t option;
+    (* Note: if this is only used from a single-threaded Lwt or Luv context, then
+       the mutex is unnecessary. The tests below use pthreads so require the mutex. *)
     m: Mutex.t;
   }
 
