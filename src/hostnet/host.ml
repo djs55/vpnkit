@@ -950,13 +950,18 @@ module type ClientServer = sig
 end
 
 module TestServer(F: ClientServer) = struct
+  let with_server address f =
+    F.bind address
+    >>= fun server ->
+    Lwt.finalize (fun () -> f server) (fun () -> F.shutdown server)
+  let with_flow flow f =
+    Lwt.finalize f (fun () -> F.close flow)
+
   let one_connection () =
     Luv_lwt.run begin
       let address = F.get_test_address () in
-      F.bind address
-      >>= fun server ->
-      Lwt.finalize
-        (fun () ->
+      with_server address
+        (fun server ->
           let connected = Lwt_mvar.create_empty () in
           F.listen server (fun flow ->
             Lwt_mvar.put connected ()
@@ -967,19 +972,83 @@ module TestServer(F: ClientServer) = struct
           >>= function
           | Error (`Msg m) -> Lwt.fail_with m
           | Ok flow ->
-            Lwt.finalize
+            with_flow flow
               (fun () ->
                 Lwt_mvar.take connected
                 >>= fun () ->
                 Lwt.return_unit
-              ) (fun () -> F.close flow)
-        ) (fun () -> F.shutdown server)
+              )
+        )
+    end
+
+  let stream_data () =
+    Luv_lwt.run begin
+      let address = F.get_test_address () in
+      with_server address
+        (fun server ->
+          let received = Lwt_mvar.create_empty () in
+          F.listen server (fun flow ->
+            with_flow flow
+              (fun () ->
+                let sha = Sha1.init () in
+                let rec loop () =
+                  F.read flow
+                  >>= function
+                  | Error _ ->
+                    Lwt.return_unit
+                  | Ok `Eof ->
+                    Lwt.return_unit
+                  | Ok (`Data buf) ->
+                    let ba = Cstruct.to_bigarray buf in
+                    Sha1.update_buffer sha ba;
+                    loop () in
+                loop ()
+                >>= fun () ->
+                Lwt.return Sha1.(to_hex @@ finalize sha)
+              )
+            >>= fun digest ->
+            Lwt_mvar.put received digest
+          );
+          F.connect address
+          >>= function
+          | Error (`Msg m) -> Lwt.fail_with m
+          | Ok flow ->
+            with_flow flow
+              (fun () ->
+                let buf = Cstruct.create 1048576 in
+                let sha = Sha1.init () in
+                let rec loop = function
+                  | 0 -> Lwt.return_unit
+                  | n ->
+                    let len = Random.int (Cstruct.len buf - 1) in
+                    let subbuf = Cstruct.sub buf 0 len in
+                    for i = 0 to Cstruct.len subbuf - 1 do
+                      Cstruct.set_uint8 subbuf i (Random.int 256);
+                    done;
+                    let ba = Cstruct.to_bigarray subbuf in
+                    Sha1.update_buffer sha ba;
+                    F.writev flow [ subbuf ]
+                    >>= function
+                    | Error _ -> Lwt.fail_with "write error"
+                    | Ok () -> loop (n - 1) in
+                loop 10
+                >>= fun () ->
+                Lwt.return Sha1.(to_hex @@ finalize sha)
+              )
+            >>= fun sent_digest ->
+            Lwt_mvar.take received
+            >>= fun received_digest ->
+            if received_digest <> sent_digest
+            then failwith (Printf.sprintf "received digest (%s) <> sent digest (%s)" received_digest sent_digest);
+            Lwt.return_unit
+        )
     end
 end
 
 let%test_module "Sockets.Stream.Unix" = (module struct
   module Tests = TestServer(Sockets.Stream.Unix)
-  let%test_unit "one Unix/Pipe connection" = Tests.one_connection ()
+  let%test_unit "one connection" = Tests.one_connection ()
+  let%test_unit "stream data" = Tests.stream_data ()
 end)
 
 
