@@ -955,15 +955,25 @@ module TestServer(F: ClientServer) = struct
       let address = F.get_test_address () in
       F.bind address
       >>= fun server ->
-      let connected = Lwt_mvar.create () in
-      F.listen server (fun flow ->
-        Lwt_mvar.put connected ()
-        >>= fun () ->
-        F.close flow
-      );
-      Lwt_mvar.take connected
-      >>= fun () ->
-      F.shutdown server
+      Lwt.finalize
+        (fun () ->
+          let connected = Lwt_mvar.create_empty () in
+          F.listen server (fun flow ->
+            Lwt_mvar.put connected ()
+            >>= fun () ->
+            F.close flow
+          );
+          F.connect address
+          >>= function
+          | Error (`Msg m) -> Lwt.fail_with m
+          | Ok flow ->
+            Lwt.finalize
+              (fun () ->
+                Lwt_mvar.take connected
+                >>= fun () ->
+                Lwt.return_unit
+              ) (fun () -> F.close flow)
+        ) (fun () -> F.shutdown server)
     end
 end
 
