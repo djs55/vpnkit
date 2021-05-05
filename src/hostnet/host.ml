@@ -42,6 +42,22 @@ let parse_sockaddr sockaddr =
 let string_of_address (dst, dst_port) =
   Ipaddr.to_string dst ^ ":" ^ (string_of_int dst_port)
 
+let choose_free_port ty ip =
+  (* Only used by testing and by 9P-based port forwarding. *)
+  let inet_addr = Unix.inet_addr_of_string @@ Ipaddr.to_string ip in
+  let s = Unix.socket Unix.PF_INET ty 0 in
+  try
+    Unix.bind s (Unix.ADDR_INET(inet_addr, 0));
+    let sa = Unix.getsockname s in
+    match sa with
+    | Unix.ADDR_INET(_, port) ->
+      Unix.close s;
+      port
+    | _ -> failwith "choose_free_port"
+  with e ->
+    Unix.close s;
+    raise e
+
 module Common = struct
   (** FLOW boilerplate *)
 
@@ -270,20 +286,22 @@ module Sockets = struct
       type server = {
         idx: int;
         label: string;
+        address: Ipaddr.t * int;
         fd: Luv.UDP.t;
         fd_mutex: Lwt_mutex.t;
         mutable closed: bool;
         mutable disable_connection_tracking: bool;
       }
 
-      let make ~idx ~label fd =
+      let make ~idx ~label ~address fd =
         let fd_mutex = Lwt_mutex.create () in
-        { idx; label; fd; fd_mutex; closed = false; disable_connection_tracking = false }
+        { idx; label; address; fd; fd_mutex; closed = false; disable_connection_tracking = false }
 
       let disable_connection_tracking server =
         server.disable_connection_tracking <- true
 
       let bind ?(description="") (ip, port) =
+        let port = if port = 0 then choose_free_port Unix.SOCK_DGRAM ip else port in
         let label = match ip with
         | Ipaddr.V4 _ -> "UDPv4"
         | Ipaddr.V6 _ -> "UDPv6" in
@@ -313,23 +331,12 @@ module Sockets = struct
           Log.err (fun f -> f "%s" msg);
           Lwt.fail_with msg
         | Ok fd ->
-          Lwt.return (make ~idx ~label fd)
+          Lwt.return (make ~idx ~label ~address:(ip, port) fd)
 
       let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "UDP.of_bound_fd not implemented"
 
-      let getsockname { fd; _ } =
-        Luv_lwt.in_luv (fun return ->
-          match Luv.UDP.getsockname fd with
-          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
-          | Ok sockaddr ->
-            begin match parse_sockaddr sockaddr with
-            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
-            | Ok (ip, port) -> return (Ok (ip, port))
-            end
-        ) >>= function
-        | Error (`Msg m) -> Lwt.fail_with m
-        | Ok x -> Lwt.return x
+      let getsockname { address; _ } = Lwt.return address
 
       let shutdown server =
         if not server.closed then begin
@@ -504,14 +511,9 @@ module Sockets = struct
       type address = Ipaddr.t * int
 
       let get_test_address () =
-        let localhost = Unix.inet_addr_of_string "127.0.0.1" in
-        let s = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-        Unix.bind s (Unix.ADDR_INET(localhost, 0));
-        let sa = Unix.getsockname s in
-        Unix.close s;
-        match sa with
-        | Unix.ADDR_INET(_, port) -> Ipaddr.of_string_exn "127.0.0.1", port
-        | _ -> failwith "get_test_address"
+        let localhost = Ipaddr.of_string_exn "127.0.0.1" in
+        let port = choose_free_port Unix.SOCK_STREAM localhost in
+        localhost, port
 
       type flow = {
         idx: int;
@@ -617,9 +619,16 @@ module Sockets = struct
       let getsockname server =
         match server.listening_fds with
           | [] -> Lwt.fail_with "socket is closed"
-          | (_, (ip, port), _) :: _ -> Lwt.return (ip, port)
+          | (_, (ip, port), _) :: _ ->
+            Printf.printf "port = %d\n%!" port;
+            Lwt.return (ip, port)
 
       let bind_one ?(description="") (ip, port) =
+        (* FIXME: if we bind port 0 we can't call `getsockname` even after calling `listen`.
+           For now there will be a small race between choosing a port and properly allocating it.
+           This code is only used by the port-forwarding which is probably unused and could be deleted. *)
+        let port = if port = 0 then choose_free_port Unix.SOCK_STREAM ip else port in
+
         let label = match ip with
         | Ipaddr.V4 _ -> "TCPv4"
         | Ipaddr.V6 _ -> "TCPv6" in
@@ -653,11 +662,11 @@ module Sockets = struct
         | Ok x ->
           Lwt.return (Ok x)
 
-      let bind ?description (ip, port) =
-        bind_one ?description (ip, port)
+      let bind ?description (ip, requested_port) =
+        bind_one ?description (ip, requested_port)
         >>= function
         | Error (`Msg m) -> Lwt.fail_with m
-        | Ok (idx, _label, fd, local_port) ->
+        | Ok (idx, _label, fd, bound_port) ->
         (* On some systems localhost will resolve to ::1 first and this can
            cause performance problems (particularly on Windows). Perform a
            best-effort bind to the ::1 address. *)
@@ -666,21 +675,21 @@ module Sockets = struct
             || Ipaddr.compare ip (Ipaddr.V4 Ipaddr.V4.any) = 0
             then begin
               Log.debug (fun f ->
-                  f "Attempting a best-effort bind of ::1:%d" local_port);
-              bind_one (Ipaddr.(V6 V6.localhost), local_port)
+                  f "Attempting a best-effort bind of ::1:%d" bound_port);
+              bind_one (Ipaddr.(V6 V6.localhost), bound_port)
               >>= function
               | Error (`Msg m) -> Lwt.fail_with m
               | Ok (idx, _, fd, _) ->
-                Lwt.return [ idx, (ip, port), fd ]
+                Lwt.return [ idx, (ip, bound_port), fd ]
             end else
               Lwt.return []
           ) (fun e ->
             Log.debug (fun f ->
-                f "Ignoring failed bind to ::1:%d (%a)" local_port Fmt.exn e);
+                f "Ignoring failed bind to ::1:%d (%a)" bound_port Fmt.exn e);
             Lwt.return []
           )
         >|= fun extra ->
-        make ip ((idx, (ip, port), fd) :: extra)
+        make ip ((idx, (ip, bound_port), fd) :: extra)
 
       let shutdown server =
         let fds = server.listening_fds in
