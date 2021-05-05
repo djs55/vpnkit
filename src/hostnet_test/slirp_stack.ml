@@ -34,7 +34,7 @@ module Dns_policy = struct
   module IntMap =
     Map.Make(struct
       type t = int let
-      compare (a: int) (b: int) = Pervasives.compare a b
+      compare (a: int) (b: int) = Stdlib.compare a b
     end)
 
   let t = ref (IntMap.add 0 google_dns IntMap.empty)
@@ -175,8 +175,9 @@ let set_slirp_stack c =
 
 let start_stack config () =
   Host.Sockets.Stream.Tcp.bind (Ipaddr.V4 Ipaddr.V4.localhost, 0)
-  >|= fun server ->
-  let _, port = Host.Sockets.Stream.Tcp.getsockname server in
+  >>= fun server ->
+  Host.Sockets.Stream.Tcp.getsockname server
+  >|= fun (_, port) ->
   Log.info (fun f -> f "Bound vpnkit server to localhost:%d" port);
   Host.Sockets.Stream.Tcp.listen server (fun flow ->
       Log.info (fun f -> f "Server connecting   TCP/IP stack");

@@ -156,8 +156,9 @@ module DevNullServer = struct
 
   let create () =
     Host.Sockets.Stream.Tcp.bind (Ipaddr.V4 Ipaddr.V4.localhost, 0)
-    >|= fun server ->
-    let _, local_port = Host.Sockets.Stream.Tcp.getsockname server in
+    >>= fun server ->
+    Host.Sockets.Stream.Tcp.getsockname server
+    >|= fun (_, local_port) ->
     Host.Sockets.Stream.Tcp.listen server accept;
     { local_port; server }
 
