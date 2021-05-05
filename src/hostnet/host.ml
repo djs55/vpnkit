@@ -180,25 +180,29 @@ module Sockets = struct
           | Error err ->
             return (Error (`Msg (Luv.Error.strerror err)))
           | Ok fd ->
+            (*
             let any_result = match address with
-              | Ipaddr.V4 _, _ -> Luv.Sockaddr.ipv4 "0" 0
-              | Ipaddr.V6 _, _ -> Luv.Sockaddr.ipv6 "0" 0 in
+              | Ipaddr.V4 _, _ -> Luv.Sockaddr.ipv4 "" 0
+              | Ipaddr.V6 _, _ -> Luv.Sockaddr.ipv6 "" 0 in
             begin match any_result with
             | Error err ->
+              Printf.printf "not able to bind\n%!";
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok any ->
               begin match Luv.UDP.bind fd any with
               | Error err ->
                 Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok () ->
+                *)
                 begin match make_sockaddr address with
                 | Error err ->
                   Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok sockaddr ->
                   return (Ok (fd, sockaddr))
                 end
+                (*
               end
-            end
+            end *)
           end
       ) >>= function
       | Error (`Msg m) ->
@@ -648,8 +652,7 @@ module Sockets = struct
               | Error err ->
                 Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok () ->
-                (* If the user requested INADDR_ANY we cannot query the port until after listen. *)
-                (* This may confuse the ::1 detection code below. *)
+                Printf.printf "bound to %d\n%!" port;
                 return (Ok (idx, label, fd, port))
               end
             end
