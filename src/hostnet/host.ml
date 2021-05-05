@@ -1270,7 +1270,15 @@ module Fn = struct
   type ('request, 'response) t = 'request -> 'response
   let create f = f
   let destroy _ = ()
-  let fn _ = failwith "FIXME: detach not implemented"
+  let fn = Lwt_preemptive.detach
+  let%test_unit "detach" =
+    Main.run begin
+      let open Lwt.Infix in
+      fn (fun () -> "hello") ()
+      >>= fun x ->
+      if x <> "hello" then failwith ("expected thread to produce 'hello', got " ^ x);
+      Lwt.return_unit
+    end
 end
 
 let compact () =
