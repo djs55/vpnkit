@@ -25,8 +25,7 @@ let do_some_io () : unit Lwt.t =
 ```
     *)
 
-val in_lwt: (unit -> 'a Lwt.t) -> 'a
-(** [in_lwt f] evaluates [f ()] inside the default Lwt event loop. *)
+(* To run in the Lwt main loop, use Lwt_preemptive.run_in_main *)
 
 val in_luv_async: (unit -> unit) -> unit
 (** [in_luv_async f] is called from Lwt to run [f ()] in the default Luv event loop.

@@ -1252,7 +1252,18 @@ module Main = struct
       Time.sleep_ns (Duration.of_ms 100)
     end;
     true
-  let run_in_main = Luv_lwt.in_lwt
+  let run_in_main = Lwt_preemptive.run_in_main
+  let%test_unit "run_in_main" =
+    let m = Lwt_mvar.create_empty () in
+    let t = Thread.create (fun () -> run_in_main @@ fun () -> Lwt_mvar.put m "hello") () in
+    run begin
+      let open Lwt.Infix in
+      Lwt_mvar.take m
+      >>= fun x ->
+      if x <> "hello" then failwith ("expected mvar to contain 'hello', got " ^ x);
+      Lwt.return_unit
+    end;
+    Thread.join t
 end
 
 module Fn = struct
