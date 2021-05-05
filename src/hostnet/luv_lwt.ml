@@ -89,6 +89,42 @@ let in_luv f =
   in_luv_async (fun () -> f wakeup_later);
   t
 
+let in_lwt f =
+  let m = Mutex.create () in
+  let c = Condition.create () in
+  let result = ref None in
+  in_lwt_async
+    (fun () ->
+      Lwt.async
+        (fun () ->
+          let open Lwt.Infix in
+          f () >>= fun x ->
+          Mutex.lock m;
+          result := Some x;
+          Condition.signal c;
+          Mutex.unlock m;
+          Lwt.return_unit
+        )
+    );
+  Mutex.lock m;
+  while !result = None do Condition.wait c m done;
+  Mutex.unlock m;
+  match !result with
+  | None -> assert false
+  | Some x -> x
+
+let%test_unit "in_lwt" =
+  let m = Lwt_mvar.create_empty () in
+  let t = Thread.create (fun () -> in_lwt @@ fun () -> Lwt_mvar.put m "hello") () in
+  Lwt_main.run begin
+    let open Lwt.Infix in
+    Lwt_mvar.take m
+    >>= fun x ->
+    if x <> "hello" then failwith ("expected mvar to contain 'hello', got " ^ x);
+    Lwt.return_unit
+  end;
+  Thread.join t
+
 let run t =
   (* Hopefully it's ok to create the async handle in this thread, even though the
      main loop runs in another thread. *)

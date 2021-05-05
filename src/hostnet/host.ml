@@ -1252,7 +1252,7 @@ module Main = struct
       Time.sleep_ns (Duration.of_ms 100)
     end;
     true
-  let run_in_main _ = failwith "FIXME: run_in_main not implemented"
+  let run_in_main = Luv_lwt.in_lwt
 end
 
 module Fn = struct
