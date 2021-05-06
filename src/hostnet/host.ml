@@ -707,6 +707,14 @@ module Sockets = struct
       let of_bound_fd ?read_buffer_size:_ _fd =
         failwith "TCP.of_bound_fd not implemented"
 
+      let test client =
+        match Luv.TCP.getsockname client with
+        | Error _ -> failwith "error"
+        | Ok sockaddr ->
+          Printf.printf "to_string = %s, port = %s\n%!"
+            (match Luv.Sockaddr.to_string sockaddr with Some x -> x | None -> "None")
+            (match Luv.Sockaddr.port sockaddr with Some x -> Printf.sprintf "%d" x | None -> "None")
+
       let listen server' cb =
         let handle_connection client label description =
           (if server'.disable_connection_tracking
@@ -742,6 +750,7 @@ module Sockets = struct
                       begin match Luv.TCP.keepalive client (Some 1) with
                       | Error err -> error "keepalive" err
                       | Ok () ->
+                        test client;
                         Luv_lwt.in_lwt_async (fun () -> Lwt.async (fun () -> handle_connection client server'.label description));
                         accept_forever ()
                       end
