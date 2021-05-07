@@ -109,7 +109,7 @@ module Make(Socket: Sig.SOCKETS) = struct
           if local_port < 1024 && not is_windows then
             request_privileged_port ipv4 local_port false >>= function
             | Error (`Msg x) -> Lwt.fail_with x
-            | Ok fd          -> Lwt.return (Socket.Datagram.Udp.of_bound_fd fd)
+            | Ok fd          -> Socket.Datagram.Udp.of_bound_fd fd
           else
             bind ?description (local_ip, local_port)
         | _ -> bind ?description (local_ip, local_port)
@@ -126,7 +126,7 @@ module Make(Socket: Sig.SOCKETS) = struct
           if local_port < 1024 && not is_windows then
             request_privileged_port ipv4 local_port true >>= function
             | Error (`Msg x) -> Lwt.fail_with x
-            | Ok fd          -> Lwt.return (Socket.Stream.Tcp.of_bound_fd fd)
+            | Ok fd          -> Socket.Stream.Tcp.of_bound_fd fd
           else
             bind ?description (local_ip, local_port)
         | _ -> bind ?description (local_ip, local_port)
