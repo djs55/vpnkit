@@ -7,6 +7,7 @@ RUN opam pin add hvsock.2.0.0 https://github.com/mirage/ocaml-hvsock/archive/2.0
 
 # Can be removed after we upgrade tcpip
 RUN opam pin configurator --dev-repo -n
+RUN opam pin add luv.0.5.7 "https://github.com/djs55/luv.git#fix-darwin-getsockname" -n
 # A small fork of the tcpip stack
 RUN opam pin add tcpip.3.3.0 "https://github.com/djs55/mirage-tcpip.git#vpnkit-20210417" -n
 

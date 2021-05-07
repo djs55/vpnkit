@@ -643,8 +643,17 @@ module Sockets = struct
               | Error err ->
                 Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok () ->
-                Printf.printf "bound to %d\n%!" port;
-                return (Ok (idx, label, fd, port))
+                begin match Luv.TCP.getsockname fd with
+                | Error err ->
+                  Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+                | Ok sockaddr ->
+                  begin match Luv.Sockaddr.port sockaddr with
+                  | None ->
+                    Luv.Handle.close fd (fun () -> return (Error (`Msg "bound local port should not be None")))
+                  | Some port ->
+                    return (Ok (idx, label, fd, port))
+                  end
+                end
               end
             end
         ) >>= function
@@ -656,11 +665,11 @@ module Sockets = struct
         | Ok x ->
           Lwt.return (Ok x)
 
-      let bind ?description (ip, port) =
-        bind_one ?description (ip, port)
+      let bind ?description (ip, requested_port) =
+        bind_one ?description (ip, requested_port)
         >>= function
         | Error (`Msg m) -> Lwt.fail_with m
-        | Ok (idx, _label, fd, local_port) ->
+        | Ok (idx, _label, fd, bound_port) ->
         (* On some systems localhost will resolve to ::1 first and this can
            cause performance problems (particularly on Windows). Perform a
            best-effort bind to the ::1 address. *)
@@ -669,21 +678,21 @@ module Sockets = struct
             || Ipaddr.compare ip (Ipaddr.V4 Ipaddr.V4.any) = 0
             then begin
               Log.debug (fun f ->
-                  f "Attempting a best-effort bind of ::1:%d" local_port);
-              bind_one (Ipaddr.(V6 V6.localhost), local_port)
+                  f "Attempting a best-effort bind of ::1:%d" bound_port);
+              bind_one (Ipaddr.(V6 V6.localhost), bound_port)
               >>= function
               | Error (`Msg m) -> Lwt.fail_with m
               | Ok (idx, _, fd, _) ->
-                Lwt.return [ idx, (ip, port), fd ]
+                Lwt.return [ idx, (ip, bound_port), fd ]
             end else
               Lwt.return []
           ) (fun e ->
             Log.debug (fun f ->
-                f "Ignoring failed bind to ::1:%d (%a)" local_port Fmt.exn e);
+                f "Ignoring failed bind to ::1:%d (%a)" bound_port Fmt.exn e);
             Lwt.return []
           )
         >|= fun extra ->
-        make ip ((idx, (ip, port), fd) :: extra)
+        make ip ((idx, (ip, bound_port), fd) :: extra)
 
       let shutdown server =
         let fds = server.listening_fds in
