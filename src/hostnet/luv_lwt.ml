@@ -47,18 +47,26 @@ module Work_queue(N: Notification) : Remote_work_queue = struct
   let flush t () =
     (* Called in the remote event loop to run pending jobs .*)
     Mutex.lock t.m;
-    Queue.iter t.run t.pending;
+    let to_run = Queue.copy t.pending in
     Queue.clear t.pending;
-    Mutex.unlock t.m
+    Mutex.unlock t.m;
+    Queue.iter t.run to_run
 
   let push t x =
     (* Called on an arbitrary thread to queue a remote job. *)
     Mutex.lock t.m;
     (* We only need to send a notification if the queue is currently empty, otherwise
        one has already been sent. *)
-    if Queue.is_empty t.pending then N.send (Option.get t.n);
+    let to_send = Queue.is_empty t.pending in
     Queue.push x t.pending;
-    Mutex.unlock t.m
+    Mutex.unlock t.m;
+    if to_send then N.send (Option.get t.n)
+
+  let length t =
+    Mutex.lock t.m;
+    let result = Queue.length t.pending in
+    Mutex.unlock t.m;
+    result
 
   let make run =
     let t = {
