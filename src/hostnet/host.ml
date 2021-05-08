@@ -116,11 +116,6 @@ module Sockets = struct
     end;
     Hashtbl.remove connection_table idx
 
-  let file_of_file_descr fd =
-    (* FIXME: this is Unix-only. It would be better to pass an fd over a pipe instead. *)
-    let os_fd : Luv.Os_fd.Fd.t = Obj.magic fd in
-    Luv.File.open_osfhandle os_fd
-
   module Datagram = struct
     type address = Ipaddr.t * int
     let string_of_address = string_of_address
@@ -319,8 +314,35 @@ module Sockets = struct
         | Ok fd ->
           Lwt.return (make ~idx ~label fd)
 
-      let of_bound_fd ?read_buffer_size:_ _fd =
-        failwith "UDP.of_bound_fd not implemented"
+      let of_bound_fd ?read_buffer_size:_ fd =
+        Luv_lwt.in_luv (fun return ->
+          match Luv_unix.Os_fd.Socket.from_unix fd with
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok socket ->
+            begin match Luv.UDP.init () with
+            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok udp ->
+              begin match Luv.UDP.open_ udp socket with
+              | Error err ->
+                Luv.Handle.close udp ignore;
+                return (Error (`Msg (Luv.Error.strerror err)))
+              | Ok () ->
+                begin match Luv.UDP.getsockname udp with
+                | Error err ->
+                  Luv.Handle.close udp ignore;
+                  return (Error (`Msg (Luv.Error.strerror err)))
+                | Ok sockaddr ->
+                  let ip = match Luv.Sockaddr.to_string sockaddr with None -> "None" | Some x -> x in
+                  let port = match Luv.Sockaddr.port sockaddr with None -> "None" | Some x -> string_of_int x in
+                  let label = "udp:" ^ ip ^ ":" ^ port in
+                  let idx = register_connection_no_limit "udp" in
+                  return (Ok (make ~idx ~label udp))
+                end
+              end
+            end
+        ) >>= function
+        | Error (`Msg m) -> Lwt.fail_with m
+        | Ok fd -> Lwt.return fd
 
       let getsockname { fd; _ } =
         Luv_lwt.in_luv (fun return ->
@@ -704,8 +726,52 @@ module Sockets = struct
           Lwt.return_unit
         ) fds
 
-      let of_bound_fd ?read_buffer_size:_ _fd =
-        failwith "TCP.of_bound_fd not implemented"
+      let of_bound_fd ?read_buffer_size:_ fd =
+        Luv_lwt.in_luv (fun return ->
+          match Luv_unix.Os_fd.Socket.from_unix fd with
+          | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+          | Ok socket ->
+            begin match Luv.TCP.init () with
+            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok tcp ->
+              begin match Luv.TCP.open_ tcp socket with
+              | Error err ->
+                Luv.Handle.close tcp ignore;
+                return (Error (`Msg (Luv.Error.strerror err)))
+              | Ok () ->
+                begin match Luv.TCP.getsockname tcp with
+                | Error err ->
+                  Luv.Handle.close tcp ignore;
+                  return (Error (`Msg (Luv.Error.strerror err)))
+                | Ok sockaddr ->
+                  begin match Luv.Sockaddr.to_string sockaddr with
+                  | None ->
+                    Luv.Handle.close tcp ignore;
+                    return (Error (`Msg ("TCP.getsockname returned no IP address")))
+                  | Some x ->
+                    begin match Ipaddr.of_string x with
+                    | None ->
+                      Luv.Handle.close tcp ignore;
+                      return (Error (`Msg ("TCP.getsockname returned an invalid IP: " ^ x)))
+                    | Some ip ->
+                      begin match Luv.Sockaddr.port sockaddr with
+                      | None ->
+                        Luv.Handle.close tcp ignore;
+                        return (Error (`Msg ("TCP.getsockname returned no port number")))
+                      | Some port ->
+                        let description = Printf.sprintf "tcp:%s:%d" x port in
+                        let idx = register_connection_no_limit description in
+                        return (Ok (idx, (ip, port), tcp))
+                      end
+                    end
+                  end
+                end
+              end
+            end
+        ) >>= function
+        | Error (`Msg m) -> Lwt.fail_with m
+        | Ok (idx, (ip, port), fd) ->
+          Lwt.return (make ip [ idx, (ip, port), fd ])
 
       let listen server' cb =
         let handle_connection client label description =
@@ -907,19 +973,32 @@ module Sockets = struct
 
       let of_bound_fd ?read_buffer_size:_ fd =
         Luv_lwt.in_luv (fun return ->
-          match file_of_file_descr fd with
+          match Luv_unix.Os_fd.Fd.from_unix fd with
           | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
-          | Ok file ->
-            let fd = Luv.Pipe.init () |> Result.get_ok in
-            begin match Luv.Pipe.open_ fd file with
-            | Error err ->
-              Luv.Handle.close fd ignore;
-              return (Error (`Msg (Luv.Error.strerror err)))
-            | Ok () ->
-              let description = match Luv.Pipe.getsockname fd with
-                | Ok path -> "unix:" ^ path
-                | Error err -> "getsockname failed: " ^ (Luv.Error.strerror err) in
-              return (Ok (description, fd))
+          | Ok fd ->
+            begin match Luv.Pipe.init() with
+            | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+            | Ok pipe ->
+              begin match Luv.File.open_osfhandle fd with
+              | Error err ->
+                Luv.Handle.close pipe ignore;
+                return (Error (`Msg (Luv.Error.strerror err)))
+              | Ok file ->
+                begin match Luv.Pipe.open_ pipe file with
+                | Error err ->
+                  Luv.Handle.close pipe ignore;
+                  return (Error (`Msg (Luv.Error.strerror err)))
+                | Ok () ->
+                  begin match Luv.Pipe.getsockname pipe with
+                  | Error err ->
+                    Luv.Handle.close pipe ignore;
+                    return (Error (`Msg (Luv.Error.strerror err)))
+                  | Ok path ->
+                    let description = "unix:" ^ path in
+                    return (Ok (description, pipe))
+                  end
+                end
+              end
             end
         ) >>= function
         | Error (`Msg m) ->
