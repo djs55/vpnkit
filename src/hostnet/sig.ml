@@ -72,7 +72,7 @@ module type SOCKETS = sig
       is to prevent starving global OS resources, particularly on OSX *)
 
   (** TODO: hide these by refactoring Hyper-V sockets stuff *)
-  val register_connection: string -> int Lwt.t
+  val register_connection: string -> (int, [ `Msg of string ]) result
   val deregister_connection: int -> unit
   val get_num_connections: unit -> int
 
