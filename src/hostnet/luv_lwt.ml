@@ -31,6 +31,7 @@ module type Remote_work_queue = sig
   type 'a t
   val make: ('a -> unit) -> 'a t  
   val push: 'a t -> 'a -> unit
+  val length: 'a t -> int
 end
 
 module Work_queue(N: Notification) : Remote_work_queue = struct
@@ -138,3 +139,19 @@ let%test "wakeup lots of tasks from a luv callback" =
     let ts = List.map fst tasks in
     Lwt_list.fold_left_s (fun acc b_t -> b_t >>= fun b -> Lwt.return (acc + b)) 0 ts
   end = (n * (n - 1)) / 2
+
+let src =
+  let src = Logs.Src.create "Luv" ~doc:"Host interface based on Luv" in
+  Logs.Src.set_level src (Some Logs.Info);
+  src
+
+module Log = (val Logs.src_log src : Logs.LOG)
+
+let _: Thread.t = Thread.create (fun () ->
+  Log.info (fun f -> f "monitoring queue lengths");
+  while true do
+    Log.info (fun f -> f "run_in_luv queue length = %d" (Run_in_luv.length to_luv_default_loop));
+    Log.info (fun f -> f "run_in_lwt queue length = %d" (Run_in_lwt.length to_lwt_default_loop));
+    Thread.delay 2.;
+  done
+) ()
