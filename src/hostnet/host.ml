@@ -735,15 +735,15 @@ module Sockets = struct
             | Error err -> Log.warn (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
             | Ok () ->
               let description = Fmt.strf "%s:%s:%d" server'.label (Ipaddr.to_string ip) port in
-              let rec accept_forever () =
-                match Luv.TCP.init () with
+              begin match Luv.TCP.init () with
                 | Error err -> Log.err (fun f -> f "TCP.init: %s"  (Luv.Error.strerror err))
                 | Ok client ->
                   let error msg err =
                     Log.warn (fun f -> f "Socket.%s.listen %s: %s" server'.label msg (Luv.Error.strerror err));
                     Luv.Handle.close client ignore in
                   begin match Luv.Stream.accept ~server:fd ~client with
-                  | Error `EAGAIN -> ()
+                  | Error `EAGAIN ->
+                    Luv.Handle.close client ignore
                   | Error err -> error "accept" err
                   | Ok () ->
                     begin match Luv.TCP.nodelay client true with
@@ -760,12 +760,11 @@ module Sockets = struct
                           handle_connection client server'.label description idx
                         | _, _ ->
                           Luv.Handle.close client ignore
-                        end;
-                        accept_forever ()
+                        end
                       end
                     end
-                  end in
-              accept_forever ()
+                  end
+                end
             end
           )
         ) server'.listening_fds
@@ -914,13 +913,15 @@ module Sockets = struct
           Luv.Stream.listen fd begin function
           | Error err -> Log.warn (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
           | Ok () ->
-            let rec accept_forever () =
-              match Luv.Pipe.init () with
+            begin match Luv.Pipe.init () with
               | Error err -> Log.err (fun f -> f "Pipe.init: %s"  (Luv.Error.strerror err))
               | Ok client ->
                 begin match Luv.Stream.accept ~server:fd ~client with
-                | Error `EAGAIN -> ()
-                | Error err -> Log.warn (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
+                | Error `EAGAIN ->
+                  Luv.Handle.close client ignore
+                | Error err ->
+                  Luv.Handle.close client ignore;
+                  Log.warn (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
                 | Ok () ->
                   begin match Connection_limit.register description, server'.disable_connection_tracking with
                   | Ok idx, _ ->
@@ -930,10 +931,9 @@ module Sockets = struct
                     handle_connection client description idx
                   | _, _ ->
                     Luv.Handle.close client ignore
-                  end;
-                  accept_forever ()
-                end in
-            accept_forever ()
+                  end
+                end
+              end
           end
         )
 
