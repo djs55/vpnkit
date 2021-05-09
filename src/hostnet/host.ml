@@ -1164,15 +1164,16 @@ module Files = struct
 
   let watch_file path callback =
     Luv_lwt.in_luv (fun return ->
-      let h = Luv.FS_event.init () |> Result.get_ok in
-
-      Luv.FS_event.start h path
-        (function
-        | Ok _ ->
-          Luv_lwt.in_lwt_async callback;
-        | Error err ->
-          Log.warn (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
-      return (Ok { h })
+      match Luv.FS_event.init () with
+      | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
+      | Ok h ->
+        Luv.FS_event.start h path
+          (function
+          | Ok _ ->
+            Luv_lwt.in_lwt_async callback;
+          | Error err ->
+            Log.warn (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
+        return (Ok { h })
     )
 
   let%test "watch a file" =
