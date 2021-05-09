@@ -293,7 +293,7 @@ let hvsock_addr_of_uri ~default_serviceid uri =
       Log.warn (fun f ->
           f "The argument max-connections is nolonger supported, use the \
              database key slirp/max-connections instead"));
-    Host.Sockets.set_max_connections max_connections;
+    Connection_limit.set_max max_connections;
 
     Log.info (fun f -> f "Starting port forwarding control 9P server on %s" port_control_url);
     let uri = Uri.of_string port_control_url in

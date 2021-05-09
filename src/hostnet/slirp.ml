@@ -800,7 +800,7 @@ struct
       (fun () ->
          Vfs.ok [
            (* could replace "connections" with "flows" *)
-           Vfs.Inode.file "connections" (Host.Sockets.connections ());
+           Vfs.Inode.file "connections" (Connection_limit.connections ());
            Vfs.Inode.dir "capture" @@ Netif.filesystem t.interface;
            Vfs.Inode.file "flows" (Tcp.Flow.filesystem ());
            Vfs.Inode.file "endpoints" endpoints;

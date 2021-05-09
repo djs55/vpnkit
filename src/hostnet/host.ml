@@ -59,57 +59,6 @@ end
 
 module Sockets = struct
 
-  let max_connections = ref None
-
-  let set_max_connections x =
-    begin match x with
-      | None -> Log.info (fun f -> f "Removed connection limit")
-      | Some limit -> Log.info (fun f -> f "Updated connection limit to %d" limit)
-    end;
-    max_connections := x
-
-  let next_connection_idx =
-    let idx = ref 0 in
-    fun () ->
-      let next = !idx in
-      incr idx;
-      next
-
-  exception Too_many_connections
-
-  let connection_table = Hashtbl.create 511
-  let get_num_connections () = Hashtbl.length connection_table
-
-  let connections () =
-    let xs = Hashtbl.fold (fun _ c acc -> c :: acc) connection_table [] in
-    Vfs.File.ro_of_string (String.concat "\n" xs)
-
-  let register_connection_no_limit description =
-    let idx = next_connection_idx () in
-    Hashtbl.replace connection_table idx description;
-    idx
-
-  let register_connection =
-    let last_error_log = ref 0. in
-    fun description -> match !max_connections with
-    | Some m when Hashtbl.length connection_table >= m ->
-      let now = Unix.gettimeofday () in
-      if (now -. !last_error_log) > 30. then begin
-        (* Avoid hammering the logging system *)
-        Log.warn (fun f ->
-            f "Exceeded maximum number of forwarded connections (%d)" m);
-        last_error_log := now;
-      end;
-      Error (`Msg "too many open connections")
-    | _ ->
-      Ok (register_connection_no_limit description)
-
-  let deregister_connection idx =
-    if not(Hashtbl.mem connection_table idx) then begin
-      Log.warn (fun f -> f "Deregistered connection %d more than once" idx)
-    end;
-    Hashtbl.remove connection_table idx
-
   module Datagram = struct
     type address = Ipaddr.t * int
     let string_of_address = string_of_address
@@ -147,17 +96,17 @@ module Sockets = struct
         | Ipaddr.V4 _, _ -> "UDPv4"
         | Ipaddr.V6 _, _ -> "UDPv6" in
         Luv_lwt.in_luv (fun return ->
-          begin match register_connection description with
+          begin match Connection_limit.register description with
           | Error e -> return (Error e)
           | Ok idx ->
             begin match Luv.UDP.init () with
             | Error err ->
-              deregister_connection idx;
+              Connection_limit.deregister idx;
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok fd ->
                   begin match make_sockaddr address with
                   | Error err ->
-                    deregister_connection idx;
+                    Connection_limit.deregister idx;
                     Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                   | Ok sockaddr ->
                     return (Ok (fd, sockaddr, idx))
@@ -237,7 +186,7 @@ module Sockets = struct
         Log.debug (fun f -> f "Socket.%s.close: %s" t.label (string_of_flow t));
         Luv_lwt.in_luv (fun return ->
           begin match t.idx with
-          | Some idx -> deregister_connection idx
+          | Some idx -> Connection_limit.deregister idx
           | None -> ()
           end;
           Luv.Handle.close fd return
@@ -271,22 +220,22 @@ module Sockets = struct
           Fmt.strf "udp:%a:%d %s" Ipaddr.pp_hum ip port description
         in
         Luv_lwt.in_luv (fun return ->
-          match register_connection description with
+          match Connection_limit.register description with
           | Error e -> return (Error e)
           | Ok idx ->
             begin match Luv.UDP.init () with
             | Error err ->
-              deregister_connection idx;
+              Connection_limit.deregister idx;
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok fd ->
               begin match make_sockaddr(ip, port) with
               | Error err ->
-                deregister_connection idx;
+                Connection_limit.deregister idx;
                 Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok sockaddr ->
                 begin match Luv.UDP.bind ~reuseaddr:true fd sockaddr with
                 | Error err ->
-                  deregister_connection idx;
+                  Connection_limit.deregister idx;
                   Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok () ->
                   return (Ok (fd, idx))
@@ -322,7 +271,7 @@ module Sockets = struct
                   let ip = match Luv.Sockaddr.to_string sockaddr with None -> "None" | Some x -> x in
                   let port = match Luv.Sockaddr.port sockaddr with None -> "None" | Some x -> string_of_int x in
                   let label = "udp:" ^ ip ^ ":" ^ port in
-                  let idx = register_connection_no_limit "udp" in
+                  let idx = Connection_limit.register_no_limit "udp" in
                   return (Ok (make ~idx ~label udp))
                 end
               end
@@ -348,7 +297,7 @@ module Sockets = struct
         if not server.closed then begin
           server.closed <- true;
           Luv_lwt.in_luv (fun return ->
-            deregister_connection server.idx;
+            Connection_limit.deregister server.idx;
             Luv.Handle.close server.fd return
           ) >>= fun () ->
           Lwt.return_unit
@@ -552,23 +501,23 @@ module Sockets = struct
         | Ipaddr.V6 _ -> "TCPv6" in
 
         Luv_lwt.in_luv (fun return ->
-          match register_connection description with
+          match Connection_limit.register description with
           | Error _ -> return (Error (`Msg (Printf.sprintf "Socket.%s.connect: hit connection limit" label)))
           | Ok idx ->
             begin match Luv.TCP.init () with
             | Error err ->
-              deregister_connection idx;
+              Connection_limit.deregister idx;
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok fd ->
               begin match make_sockaddr (ip, port) with
               | Error err ->
-                deregister_connection idx;
+                Connection_limit.deregister idx;
                 Luv.Handle.close fd ignore;
                 return (Error (`Msg (Luv.Error.strerror err)))
               | Ok sockaddr ->
                 Luv.TCP.connect fd sockaddr begin function
                 | Error err ->
-                  deregister_connection idx;
+                  Connection_limit.deregister idx;
                   Luv.Handle.close fd ignore;
                   return (Error (`Msg (Luv.Error.strerror err)))
                 | Ok () ->
@@ -610,7 +559,7 @@ module Sockets = struct
         if not t.closed then begin
           t.closed <- true;
           Luv_lwt.in_luv (fun return ->
-            deregister_connection t.idx;
+            Connection_limit.deregister t.idx;
             Luv.Handle.close t.fd return
           ) >>= fun () ->
           Lwt.return_unit
@@ -647,32 +596,32 @@ module Sockets = struct
           Fmt.strf "tcp:%a:%d %s" Ipaddr.pp_hum ip port description
         in
         Luv_lwt.in_luv (fun return ->
-          match register_connection description with
+          match Connection_limit.register description with
           | Error e -> return (Error e)
           | Ok idx ->
             begin match Luv.TCP.init() with
             | Error err ->
-              deregister_connection idx;
+              Connection_limit.deregister idx;
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok fd ->
               begin match make_sockaddr (ip, port) with
               | Error err ->
-                deregister_connection idx;
+                Connection_limit.deregister idx;
                 Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok sockaddr ->
                 begin match Luv.TCP.bind fd sockaddr with
                 | Error err ->
-                  deregister_connection idx;
+                  Connection_limit.deregister idx;
                   Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok () ->
                   begin match Luv.TCP.getsockname fd with
                   | Error err ->
-                    deregister_connection idx;
+                    Connection_limit.deregister idx;
                     Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                   | Ok sockaddr ->
                     begin match Luv.Sockaddr.port sockaddr with
                     | None ->
-                      deregister_connection idx;
+                      Connection_limit.deregister idx;
                       Luv.Handle.close fd (fun () -> return (Error (`Msg "bound local port should not be None")))
                     | Some port ->
                       return (Ok (idx, label, fd, port))
@@ -723,7 +672,7 @@ module Sockets = struct
         server.listening_fds <- [];
         Lwt_list.iter_s (fun (idx, _, fd) ->
           Luv_lwt.in_luv (fun return ->
-            deregister_connection idx;
+            Connection_limit.deregister idx;
             Luv.Handle.close fd return
           ) >>= fun () ->
           Lwt.return_unit
@@ -763,7 +712,7 @@ module Sockets = struct
                         return (Error (`Msg ("TCP.getsockname returned no port number")))
                       | Some port ->
                         let description = Printf.sprintf "tcp:%s:%d" x port in
-                        let idx = register_connection_no_limit description in
+                        let idx = Connection_limit.register_no_limit description in
                         return (Ok (idx, (ip, port), tcp))
                       end
                     end
@@ -811,11 +760,11 @@ module Sockets = struct
                       begin match Luv.TCP.keepalive client (Some 1) with
                       | Error err -> error "keepalive" err
                       | Ok () ->
-                        begin match register_connection description, server'.disable_connection_tracking with
+                        begin match Connection_limit.register description, server'.disable_connection_tracking with
                         | Ok idx, _ ->
                           handle_connection client server'.label description idx
                         | Error _, true ->
-                          let idx = register_connection_no_limit description in
+                          let idx = Connection_limit.register_no_limit description in
                           handle_connection client server'.label description idx
                         | _, _ ->
                           Luv.Handle.close client ignore
@@ -860,19 +809,19 @@ module Sockets = struct
       let connect ?read_buffer_size:_ path =
         let description = "unix:" ^ path in
         Luv_lwt.in_luv (fun return ->
-          match register_connection description with
+          match Connection_limit.register description with
           | Error e -> return (Error e)
           | Ok idx ->
             begin match Luv.Pipe.init () with
             | Error err ->
-              deregister_connection idx;
+              Connection_limit.deregister idx;
               let msg = Fmt.strf "Pipe.connect %s: %s" path (Luv.Error.strerror err) in
               Log.err (fun f -> f "%s" msg);
               return (Error (`Msg msg))
             | Ok fd ->
               Luv.Pipe.connect fd path begin function
               | Error err ->
-                deregister_connection idx;
+                Connection_limit.deregister idx;
                 return (Error (`Msg (Luv.Error.strerror err)))
               | Ok () -> return (Ok (of_fd ~description ~idx fd))
               end
@@ -905,7 +854,7 @@ module Sockets = struct
         if not t.closed then begin
           t.closed <- true;
           Luv_lwt.in_luv (fun return ->
-            deregister_connection t.idx;
+            Connection_limit.deregister t.idx;
             Luv.Handle.close t.fd return
           )
         end else Lwt.return_unit
@@ -921,17 +870,17 @@ module Sockets = struct
         let description = Fmt.strf "unix:%s %s" path description in
         Luv_lwt.in_luv (fun return ->
           Luv.File.unlink path begin fun _ ->
-            match register_connection description with
+            match Connection_limit.register description with
             | Error e -> return (Error e)
             | Ok idx ->
               begin match Luv.Pipe.init () with
               | Error err ->
-                deregister_connection idx;
+                Connection_limit.deregister idx;
                 return (Error (`Msg (Luv.Error.strerror err)))
               | Ok fd ->
                 begin match Luv.Pipe.bind fd path with
                 | Error err ->
-                  deregister_connection idx;
+                  Connection_limit.deregister idx;
                   return (Error (`Msg (Luv.Error.strerror err)))
                 | Ok () ->
                   return (Ok { idx; fd; closed = false; disable_connection_tracking = false })
@@ -979,11 +928,11 @@ module Sockets = struct
                 | Error `EAGAIN -> ()
                 | Error err -> Log.warn (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
                 | Ok () ->
-                  begin match register_connection description, server'.disable_connection_tracking with
+                  begin match Connection_limit.register description, server'.disable_connection_tracking with
                   | Ok idx, _ ->
                     handle_connection client description idx
                   | Error _, true ->
-                    let idx = register_connection_no_limit description in
+                    let idx = Connection_limit.register_no_limit description in
                     handle_connection client description idx
                   | _, _ ->
                     Luv.Handle.close client ignore
@@ -1018,7 +967,7 @@ module Sockets = struct
                     return (Error (`Msg (Luv.Error.strerror err)))
                   | Ok path ->
                     let description = "unix:" ^ path in
-                    let idx = register_connection_no_limit description in
+                    let idx = Connection_limit.register_no_limit description in
                     return (Ok (pipe, idx))
                   end
                 end
@@ -1035,7 +984,7 @@ module Sockets = struct
         if not server.closed then begin
           server.closed <- true;
           Luv_lwt.in_luv (fun return ->
-            deregister_connection server.idx;
+            Connection_limit.deregister server.idx;
             Luv.Handle.close server.fd return
           )
         end else

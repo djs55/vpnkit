@@ -36,13 +36,6 @@ module Make(Socket: Sig.SOCKETS) = struct
     c: Channel.t;
   }
 
-  let register_connection = Socket.register_connection
-  let deregister_connection = Socket.deregister_connection
-  let set_max_connections = Socket.set_max_connections
-  let get_num_connections = Socket.get_num_connections
-  let connections = Socket.connections
-  exception Too_many_connections = Socket.Too_many_connections
-
   let of_fd fd =
     let buf = Cstruct.create Init.sizeof in
     let (_: Cstruct.t) = Init.marshal Init.default buf in
