@@ -272,13 +272,13 @@ module Sockets = struct
                   let port = match Luv.Sockaddr.port sockaddr with None -> "None" | Some x -> string_of_int x in
                   let label = "udp:" ^ ip ^ ":" ^ port in
                   let idx = Connection_limit.register_no_limit "udp" in
-                  return (Ok (make ~idx ~label udp))
+                  return (Ok (idx, label, udp))
                 end
               end
             end
         ) >>= function
         | Error (`Msg m) -> Lwt.fail_with m
-        | Ok fd -> Lwt.return fd
+        | Ok (idx, label, udp) -> Lwt.return (make ~idx ~label udp)
 
       let getsockname { fd; _ } =
         Luv_lwt.in_luv (fun return ->
@@ -822,11 +822,13 @@ module Sockets = struct
               Luv.Pipe.connect fd path begin function
               | Error err ->
                 Connection_limit.deregister idx;
-                return (Error (`Msg (Luv.Error.strerror err)))
-              | Ok () -> return (Ok (of_fd ~description ~idx fd))
+                Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
+              | Ok () -> return (Ok (idx, fd))
               end
             end
-        )
+        ) >>= function
+        | Error e -> Lwt.return (Error e)
+        | Ok (idx, fd) -> Lwt.return (Ok (of_fd ~description ~idx fd))
 
       let shutdown_read _ =
         Lwt.return ()
