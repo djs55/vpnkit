@@ -184,7 +184,7 @@ module Sockets = struct
       ) >>= function
       | Error (`Msg m) ->
         let msg = Fmt.strf "Socket.%s.connect %s: %s" label (string_of_address address) m in
-        Log.err (fun f -> f "%s" msg);
+        Log.info (fun f -> f "%s" msg);
         Lwt.return (Error (`Msg msg))
       | Ok (fd, sockaddr, idx) ->
         Lwt.return (Ok (of_fd ~idx ?read_buffer_size ~description sockaddr address fd))
@@ -204,7 +204,7 @@ module Sockets = struct
           | Ok (_, None, _) -> () (* EAGAIN, to be ignored *)
           | Ok (buf, Some peer, flags) ->
             if List.mem `PARTIAL flags then begin
-              Log.err (fun f ->
+              Log.warn (fun f ->
                 f "Socket.%s.read: dropping partial response (buffer \
                   was %d bytes)" t.label (Luv.Buffer.size buf));
             end else begin
@@ -380,7 +380,7 @@ module Sockets = struct
           | Ok (_, None, _) -> () (* EAGAIN, to be ignored *)
           | Ok (buf, Some peer, flags) ->
             if List.mem `PARTIAL flags then begin
-              Log.err (fun f ->
+              Log.warn (fun f ->
                 f "Socket.%s.read: dropping partial response (buffer \
                   was %d bytes)" server.label (Luv.Buffer.size buf));
             end else begin
@@ -437,7 +437,7 @@ module Sockets = struct
                   );
                 Lwt.return true
             ) (fun e ->
-              Log.err (fun f -> f "Socket.%s.listen caught %s shutting down server"
+              Log.info (fun f -> f "Socket.%s.listen caught %s shutting down server"
                           t.label(Printexc.to_string e)
                       );
               Lwt.return false
@@ -474,7 +474,7 @@ module Sockets = struct
         >>= function
         | Error (`Msg m) ->
           let msg = Fmt.strf "%s.sendto %s: %s" server.label (string_of_address (ip, port)) m in
-          Log.err (fun f -> f "%s" msg);
+          Log.info (fun f -> f "%s" msg);
           Lwt.fail_with m
         | Ok () -> Lwt.return_unit
     end
@@ -596,7 +596,7 @@ module Sockets = struct
           ) >>= function
           | Error (`Msg m) ->
             let msg = Fmt.strf "Socket.%s.connect %s:%d: %s" label (Ipaddr.to_string ip) port m in
-            Log.err (fun f -> f "%s" msg);
+            Log.info (fun f -> f "%s" msg);
             Lwt.return (Error (`Msg msg))
           | Ok (fd, idx) ->
             Lwt.return (Ok (of_fd ~description ~idx ~label fd))
@@ -610,7 +610,7 @@ module Sockets = struct
             Luv_lwt.in_luv (fun return ->
               Luv.Stream.shutdown fd begin function
                 | Error err ->
-                  Log.err (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err));
+                  Log.warn (fun f -> f "Socket.%s.shutdown_write: %s" label (Luv.Error.strerror err));
                   return ()
                 | Ok () ->
                   return ()
@@ -808,7 +808,7 @@ module Sockets = struct
         List.iter (fun (_, (ip, port), fd) ->
           Luv_lwt.in_luv_async (fun () ->
             Luv.Stream.listen fd begin function
-            | Error err -> Log.err (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
+            | Error err -> Log.warn (fun f -> f "TCP.listen: %s"  (Luv.Error.strerror err))
             | Ok () ->
               let description = Fmt.strf "%s:%s:%d" server'.label (Ipaddr.to_string ip) port in
               let rec accept_forever () =
@@ -816,9 +816,10 @@ module Sockets = struct
                 | Error err -> Log.err (fun f -> f "TCP.init: %s"  (Luv.Error.strerror err))
                 | Ok client ->
                   let error msg err =
-                    Log.err (fun f -> f "Socket.%s.listen %s: %s" server'.label msg (Luv.Error.strerror err));
+                    Log.warn (fun f -> f "Socket.%s.listen %s: %s" server'.label msg (Luv.Error.strerror err));
                     Luv.Handle.close client ignore in
                   begin match Luv.Stream.accept ~server:fd ~client with
+                  | Error `EAGAIN -> ()
                   | Error err -> error "accept" err
                   | Ok () ->
                     begin match Luv.TCP.nodelay client true with
@@ -904,7 +905,7 @@ module Sockets = struct
           Luv_lwt.in_luv (fun return ->
             Luv.Stream.shutdown fd begin function
               | Error err ->
-                Log.err (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err));
+                Log.warn (fun f -> f "Pipe.shutdown_write: %s" (Luv.Error.strerror err));
                 return ()
               | Ok () ->
                 return ()
@@ -985,14 +986,15 @@ module Sockets = struct
             | Ok path -> path
             | Error err -> "(error " ^ (Luv.Error.strerror err) ^ ")") in
           Luv.Stream.listen fd begin function
-          | Error err -> Log.err (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
+          | Error err -> Log.warn (fun f -> f "Pipe.listen: %s"  (Luv.Error.strerror err))
           | Ok () ->
             let rec accept_forever () =
               match Luv.Pipe.init () with
               | Error err -> Log.err (fun f -> f "Pipe.init: %s"  (Luv.Error.strerror err))
               | Ok client ->
                 begin match Luv.Stream.accept ~server:fd ~client with
-                | Error err -> Log.err (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
+                | Error `EAGAIN -> ()
+                | Error err -> Log.warn (fun f -> f "Pipe.accept: %s" (Luv.Error.strerror err))
                 | Ok () ->
                   begin match register_connection description, server'.disable_connection_tracking with
                   | Ok idx, _ ->
@@ -1041,7 +1043,7 @@ module Sockets = struct
             end
         ) >>= function
         | Error (`Msg m) ->
-          Log.err (fun f -> f "%s" m);
+          Log.warn (fun f -> f "%s" m);
           failwith m
         | Ok (fd, idx) ->
           Lwt.return { idx; fd; closed = false; disable_connection_tracking = false }
@@ -1246,7 +1248,7 @@ module Files = struct
         | Ok _ ->
           Luv_lwt.in_lwt_async callback;
         | Error err ->
-          Log.err (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
+          Log.warn (fun f -> f "watching %s: %s" path (Luv.Error.err_name err)));
       return (Ok { h })
     )
 
