@@ -71,11 +71,14 @@ module Hvsock = struct
     failwith "Hyper-V socket forwarding not initialised"
   | Some sockaddr ->
     let description = "hvsock" in
-    Host.Sockets.register_connection description >>= fun idx ->
-    let fd = F.Socket.create () in
-    F.Socket.connect fd sockaddr >|= fun () ->
-    let flow = F.connect fd in
-    { idx; flow }
+    begin match Host.Sockets.register_connection description with
+    | Error (`Msg m) -> Lwt.fail_with m
+    | Ok idx ->
+      let fd = F.Socket.create () in
+      F.Socket.connect fd sockaddr >|= fun () ->
+      let flow = F.connect fd in
+      { idx; flow }
+    end
 
   let read_into t = F.read_into t.flow
   let read t = F.read t.flow
