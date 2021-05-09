@@ -512,14 +512,12 @@ module Sockets = struct
               begin match make_sockaddr (ip, port) with
               | Error err ->
                 Connection_limit.deregister idx;
-                Luv.Handle.close fd ignore;
-                return (Error (`Msg (Luv.Error.strerror err)))
+                Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok sockaddr ->
                 Luv.TCP.connect fd sockaddr begin function
                 | Error err ->
                   Connection_limit.deregister idx;
-                  Luv.Handle.close fd ignore;
-                  return (Error (`Msg (Luv.Error.strerror err)))
+                  Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok () ->
                   return (Ok (fd, idx))
                 end
@@ -561,8 +559,7 @@ module Sockets = struct
           Luv_lwt.in_luv (fun return ->
             Connection_limit.deregister t.idx;
             Luv.Handle.close t.fd return
-          ) >>= fun () ->
-          Lwt.return_unit
+          )
         end else Lwt.return_unit
 
       type server = {
@@ -688,28 +685,23 @@ module Sockets = struct
             | Ok tcp ->
               begin match Luv.TCP.open_ tcp socket with
               | Error err ->
-                Luv.Handle.close tcp ignore;
-                return (Error (`Msg (Luv.Error.strerror err)))
+                Luv.Handle.close tcp (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok () ->
                 begin match Luv.TCP.getsockname tcp with
                 | Error err ->
-                  Luv.Handle.close tcp ignore;
-                  return (Error (`Msg (Luv.Error.strerror err)))
+                  Luv.Handle.close tcp (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok sockaddr ->
                   begin match Luv.Sockaddr.to_string sockaddr with
                   | None ->
-                    Luv.Handle.close tcp ignore;
-                    return (Error (`Msg ("TCP.getsockname returned no IP address")))
+                    Luv.Handle.close tcp (fun () -> return (Error (`Msg ("TCP.getsockname returned no IP address"))))
                   | Some x ->
                     begin match Ipaddr.of_string x with
                     | None ->
-                      Luv.Handle.close tcp ignore;
-                      return (Error (`Msg ("TCP.getsockname returned an invalid IP: " ^ x)))
+                      Luv.Handle.close tcp (fun () -> return (Error (`Msg ("TCP.getsockname returned an invalid IP: " ^ x))))
                     | Some ip ->
                       begin match Luv.Sockaddr.port sockaddr with
                       | None ->
-                        Luv.Handle.close tcp ignore;
-                        return (Error (`Msg ("TCP.getsockname returned no port number")))
+                        Luv.Handle.close tcp (fun () -> return (Error (`Msg ("TCP.getsockname returned no port number"))))
                       | Some port ->
                         let description = Printf.sprintf "tcp:%s:%d" x port in
                         let idx = Connection_limit.register_no_limit description in
@@ -883,7 +875,7 @@ module Sockets = struct
                 begin match Luv.Pipe.bind fd path with
                 | Error err ->
                   Connection_limit.deregister idx;
-                  return (Error (`Msg (Luv.Error.strerror err)))
+                  Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok () ->
                   return (Ok { idx; fd; closed = false; disable_connection_tracking = false })
                 end
@@ -955,18 +947,15 @@ module Sockets = struct
             | Ok pipe ->
               begin match Luv.File.open_osfhandle fd with
               | Error err ->
-                Luv.Handle.close pipe ignore;
-                return (Error (`Msg (Luv.Error.strerror err)))
+                Luv.Handle.close pipe (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
               | Ok file ->
                 begin match Luv.Pipe.open_ pipe file with
                 | Error err ->
-                  Luv.Handle.close pipe ignore;
-                  return (Error (`Msg (Luv.Error.strerror err)))
+                  Luv.Handle.close pipe (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                 | Ok () ->
                   begin match Luv.Pipe.getsockname pipe with
                   | Error err ->
-                    Luv.Handle.close pipe ignore;
-                    return (Error (`Msg (Luv.Error.strerror err)))
+                    Luv.Handle.close pipe (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
                   | Ok path ->
                     let description = "unix:" ^ path in
                     let idx = Connection_limit.register_no_limit description in
