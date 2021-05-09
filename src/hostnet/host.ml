@@ -155,20 +155,6 @@ module Sockets = struct
               deregister_connection idx;
               return (Error (`Msg (Luv.Error.strerror err)))
             | Ok fd ->
-              (*
-              let any_result = match address with
-                | Ipaddr.V4 _, _ -> Luv.Sockaddr.ipv4 "" 0
-                | Ipaddr.V6 _, _ -> Luv.Sockaddr.ipv6 "" 0 in
-              begin match any_result with
-              | Error err ->
-                Printf.printf "not able to bind\n%!";
-                return (Error (`Msg (Luv.Error.strerror err)))
-              | Ok any ->
-                begin match Luv.UDP.bind fd any with
-                | Error err ->
-                  Luv.Handle.close fd (fun () -> return (Error (`Msg (Luv.Error.strerror err))))
-                | Ok () ->
-                  *)
                   begin match make_sockaddr address with
                   | Error err ->
                     deregister_connection idx;
@@ -176,9 +162,6 @@ module Sockets = struct
                   | Ok sockaddr ->
                     return (Ok (fd, sockaddr, idx))
                   end
-                  (*
-                end
-              end *)
             end
           end
       ) >>= function

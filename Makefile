@@ -12,6 +12,7 @@ vpnkit.exe:
 
 .PHONY: test
 test:
+	dune runtest --no-buffer
 	dune build src/hostnet_test/main.exe
 	cp -r go/test_inputs _build/default/src/hostnet_test/
 # One test requires 1026 file descriptors
