@@ -496,6 +496,8 @@ module Sockets = struct
               | Ok () -> return (Ok (`Data ()))
               | Error err ->return (Error (`Msg (Luv.Error.strerror err)))
             end
+          | Error `EOF ->
+            return (Ok `Eof)
           | Error err ->
             return (Error (`Msg (Luv.Error.strerror err)))
         end
@@ -509,6 +511,8 @@ module Sockets = struct
           | Ok () -> return (Ok (`Data (Cstruct.of_bigarray buf)))
           | Error err -> return (Error (`Msg (Luv.Error.strerror err)))
           end
+        | Error `EOF ->
+          return (Ok `Eof)
         | Error err ->
           return (Error (`Msg (Luv.Error.strerror err)))
         end
