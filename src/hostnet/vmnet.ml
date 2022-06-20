@@ -49,6 +49,7 @@ module Command = struct
     | Ethernet of Uuidm.t (* 36 bytes *)
     | Preferred_ipv4 of Uuidm.t (* 36 bytes *) * Ipaddr.V4.t
     | Bind_ipv4 of Ipaddr.V4.t * int * bool
+    | Ethernet_fd of Uuidm.t (* 36 bytes *)
 
   let to_string = function
   | Ethernet x -> Fmt.str "Ethernet %a" Uuidm.pp x
@@ -56,6 +57,7 @@ module Command = struct
     Fmt.str "Preferred_ipv4 %a %a" Uuidm.pp uuid Ipaddr.V4.pp ip
   | Bind_ipv4 (ip, port, tcp) ->
     Fmt.str "Bind_ipv4 %a %d %b" Ipaddr.V4.pp ip port tcp
+  | Ethernet_fd x -> Fmt.str "Ethernet_fd %a" Uuidm.pp x
 
   let sizeof = 1 + 36 + 4
 
@@ -83,6 +85,12 @@ module Command = struct
     let rest = Cstruct.shift rest 2 in
     Cstruct.set_uint8 rest 0 (if stream then 0 else 1);
     Cstruct.shift rest 1
+  | Ethernet_fd uuid ->
+    Cstruct.set_uint8 rest 0 15;
+    let rest = Cstruct.shift rest 1 in
+    let uuid_str = Uuidm.to_string uuid in
+    Cstruct.blit_from_string uuid_str 0 rest 0 (String.length uuid_str);
+    Cstruct.shift rest (String.length uuid_str)
 
   let unmarshal rest =
     let process_uuid uuid_str =
@@ -112,6 +120,12 @@ module Command = struct
       (match process_uuid uuid_str with
       | Some uuid -> Ok (Preferred_ipv4 (uuid, ip), rest)
       | None -> Error (`Msg (Printf.sprintf "Invalid UUID: %s" uuid_str)))
+    | 15 -> (* ethernet_fd *)
+      let uuid_str = Cstruct.(to_string (sub rest 1 36)) in
+      let rest = Cstruct.shift rest 37 in
+      (match process_uuid uuid_str with
+       | Some uuid -> Ok (Ethernet_fd uuid, rest)
+       | None -> Error (`Msg (Printf.sprintf "Invalid UUID: %s" uuid_str)))
     | n -> Error (`Msg (Printf.sprintf "Unknown command: %d" n))
 
 end
@@ -215,8 +229,13 @@ module Make(C: Sig.CONN) = struct
 
   let failf fmt = Fmt.kstr (fun e -> Lwt_result.fail (`Msg e)) fmt
 
+
+  type data =
+    | Stream of Channel.t (** Packets are serialised inline on the C.flow *)
+    | Datagram of Host.Sockets.Datagram.Udp.flow (** Packets are sent over a passed AF_UNIX SOCK_DRAM file descriptor *)
+
   type t = {
-    mutable fd: Channel.t option;
+    mutable fd: data option;
     stats: Mirage_net.stats;
     client_uuid: Uuidm.t;
     client_macaddr: Macaddr.t;
@@ -311,6 +330,8 @@ module Make(C: Sig.CONN) = struct
           failf "%s.negotiate: unsupported command Bind_ipv4" server_log_prefix
         | Command.Ethernet uuid -> assign_uuid_ip uuid None
         | Command.Preferred_ipv4 (uuid, ip) -> assign_uuid_ip uuid (Some ip)
+        | Command.Ethernet_fd uuid ->
+          failwith "ethernet_fd unimplemented"
       end
     | x -> 
       let (_: Cstruct.t) = Init.marshal Init.default buf in (* write our version before disconnecting *)
@@ -420,13 +441,14 @@ module Make(C: Sig.CONN) = struct
 
   type fd = C.flow
 
+
   let of_fd ~connect_client_fn ~server_macaddr ~mtu flow =
     let open Lwt_result.Infix in
     let channel = Channel.create flow in
     server_negotiate ~fd:channel ~connect_client_fn ~mtu
     >>= fun (client_uuid, client_macaddr) ->
     let t = make ~client_macaddr ~server_macaddr ~mtu ~client_uuid
-        ~log_prefix:server_log_prefix channel in
+        ~log_prefix:server_log_prefix (Stream channel) in
     Lwt_result.return t
 
   let client_of_fd ~uuid ?preferred_ip ~server_macaddr flow =
@@ -438,7 +460,7 @@ module Make(C: Sig.CONN) = struct
       make ~client_macaddr:server_macaddr
         ~server_macaddr:vif.Vif.client_macaddr ~mtu:vif.Vif.mtu ~client_uuid:uuid
         ~log_prefix:client_log_prefix
-        channel in
+        (Stream channel) in
     Lwt_result.return t
 
   let disconnect t = match t.fd with
@@ -447,13 +469,19 @@ module Make(C: Sig.CONN) = struct
     Log.info (fun f -> f "%s.disconnect" t.log_prefix);
     t.fd <- None;
     Log.debug (fun f -> f "%s.disconnect flushing channel" t.log_prefix);
-    (Channel.flush fd >|= function
-      | Ok ()   -> ()
-      | Error e ->
-        Log.err (fun l ->
-            l "%s error while disconnecting the vmtnet connection: %a"
-              t.log_prefix Channel.pp_write_error e);
-    ) >|= fun () ->
+    begin match fd with
+    | Stream c ->
+      Channel.flush c >|= begin function
+        | Ok ()   -> ()
+        | Error e ->
+          Log.err (fun l ->
+              l "%s error while disconnecting the vmtnet connection: %a"
+                t.log_prefix Channel.pp_write_error e);
+          end
+      | Datagram _ ->
+        Lwt.return_unit
+    end
+      >|= fun () ->
     Lwt.wakeup_later t.after_disconnect_u ()
 
   let after_disconnect t = t.after_disconnect
@@ -515,12 +543,17 @@ module Make(C: Sig.CONN) = struct
     t.callback <- new_callback;
 
     let last_error_log = ref 0. in
+    let with_packet fd f = match fd with
+      | Stream c ->
+        with_read t (Channel.read_exactly ~len:Packet.sizeof c) @@ fun bufs ->
+        let read_header = Cstruct.concat bufs in
+        with_msg t (Packet.unmarshal read_header) @@ fun (len, _) ->
+        with_read t (Channel.read_exactly ~len c) f
+      | Datagram _ -> failwith "datagram not implemented" in
+    
     let rec loop () =
-      (with_fd t @@ fun fd ->
-       with_read t (Channel.read_exactly ~len:Packet.sizeof fd) @@ fun bufs ->
-       let read_header = Cstruct.concat bufs in
-       with_msg t (Packet.unmarshal read_header) @@ fun (len, _) ->
-       with_read t (Channel.read_exactly ~len fd) @@ fun bufs ->
+      (with_fd t @@ fun fd -> 
+       with_packet fd @@ fun bufs ->
        capture t bufs >>= fun () ->
        Log.debug (fun f ->
            let b = Buffer.create 128 in
@@ -607,18 +640,23 @@ module Make(C: Sig.CONN) = struct
           match t.fd with
           | None    -> Lwt.return (Error `Disconnected)
           | Some fd ->
-            Channel.write_buffer fd
-              (Cstruct.sub t.write_header 0 Packet.sizeof);
-            t.write_header <- Cstruct.shift t.write_header Packet.sizeof;
             Log.debug (fun f ->
-                let b = Buffer.create 128 in
-                Cstruct.hexdump_to_buffer b buf;
-                f "sending%s" (Buffer.contents b)
-              );
-            Channel.write_buffer fd buf;
-            Channel.flush fd >|= function
-            | Ok ()   -> Ok ()
-            | Error e -> Error (`Channel e)
+              let b = Buffer.create 128 in
+              Cstruct.hexdump_to_buffer b buf;
+              f "sending%s" (Buffer.contents b)
+            );
+            begin match fd with
+            | Stream c ->
+              Channel.write_buffer c
+                (Cstruct.sub t.write_header 0 Packet.sizeof);
+              t.write_header <- Cstruct.shift t.write_header Packet.sizeof;
+
+              Channel.write_buffer c buf;
+              Channel.flush c >|= (function
+              | Ok ()   -> Ok ()
+              | Error e -> Error (`Channel e))
+            | Datagram _ -> failwith "write unimplemented"
+            end
         end)
 
   let add_listener t callback = t.listeners <- callback :: t.listeners
