@@ -423,6 +423,13 @@ let hvsock_addr_of_uri ~default_serviceid uri =
       if Uri.scheme uri = Some "hyperv-connect"
       then hvsock_connect_forever socket_url sockaddr callback
       else hvsock_listen sockaddr callback
+    | Some "dgram" ->
+      let module Slirp_stack =
+        Slirp.Make(Ethernet_unix_dgram)(Dns_policy)
+          (Mclock)(Mirage_random_stdlib)(Vnet)
+      in
+      let wait_forever, _ = Lwt.task () in
+      wait_forever
     | Some "fd" | None ->
       let module Slirp_stack =
         Slirp.Make(Vmnet.Make(Host.Sockets.Stream.Unix))(Dns_policy)
