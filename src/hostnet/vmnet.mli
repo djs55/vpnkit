@@ -61,7 +61,6 @@ module Command : sig
     | Ethernet of Uuidm.t (* 36 bytes *)
     | Preferred_ipv4 of Uuidm.t (* 36 bytes *) * Ipaddr.V4.t
     | Bind_ipv4 of Ipaddr.V4.t * int * bool
-    | Ethernet_fd of Uuidm.t (* 36 bytes *)
 
   val to_string: t -> string
   val sizeof: int
