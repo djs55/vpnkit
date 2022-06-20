@@ -91,4 +91,35 @@ let recv flow buf = push flow.recv buf
 
 let close flow =
   close flow.send;
-  close flow.recv
+  close flow.recv;
+  Unix.close flow.fd
+
+let%test_unit "socketpair" =
+  if Sys.os_type <> "Win32" then begin
+    let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
+    Lwt_main.run begin
+      let open Lwt.Infix in
+      of_bound_fd a
+      >>= fun a_flow ->
+      of_bound_fd b
+      >>= fun b_flow ->
+      let rec loop () =
+        send a_flow (Cstruct.of_string "hello")
+        >>= fun n ->
+        if n <> 5 then failwith (Printf.sprintf "send returned %d, expected 5" n);
+        Lwt_unix.sleep 1.
+        >>= fun () ->
+        loop () in
+      let _ = loop () in
+      let buf = Cstruct.create 1024 in
+      recv b_flow buf
+      >>= fun n ->
+      if n <> 5 then failwith (Printf.sprintf "recv returned %d, expected 5" n);
+      let received = Cstruct.(to_string (sub buf 0 n)) in
+      if received <> "hello" then failwith (Printf.sprintf "recv returned '%s', expected 'hello'" received);
+      Printf.fprintf stderr "closing\n";
+      close a_flow;
+      close b_flow;
+      Lwt.return_unit
+    end
+  end
