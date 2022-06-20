@@ -97,6 +97,7 @@ module Make(Socket: Sig.SOCKETS) = struct
   module Datagram = struct
     type address = Socket.Datagram.address
 
+    module Unix = Socket.Datagram.Unix
     module Udp = struct
       include Socket.Datagram.Udp
 

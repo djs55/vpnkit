@@ -64,6 +64,20 @@ module type FLOW_CLIENT_SERVER = sig
     and type flow := flow
 end
 
+module type UNIX_DGRAM = sig
+  type flow
+
+  val of_bound_fd: ?mtu:int -> Unix.file_descr -> flow Lwt.t
+  (** Create a flow from a file descriptor bound to a Unix domain socket
+      by some other process and passed to us. *)
+
+  val send: flow -> Cstruct.t -> int Lwt.t
+
+  val recv: flow -> Cstruct.t -> int Lwt.t
+
+  val close: flow -> unit
+end
+
 module type SOCKETS = sig
   (* An OS-based BSD sockets implementation *)
 
@@ -81,6 +95,7 @@ module type SOCKETS = sig
 
       val sendto: server -> address -> ?ttl:int -> Cstruct.t -> unit Lwt.t
     end
+    module Unix: UNIX_DGRAM
   end
   module Stream: sig
     module Tcp: sig
