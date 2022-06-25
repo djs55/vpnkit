@@ -454,6 +454,7 @@ module Sockets = struct
         { idx; label; description; fd; read_buffer; read_buffer_size; closed }
 
       let connect ?(read_buffer_size = default_read_buffer_size) (ip, port) =
+        Log.info (fun f -> f "Tcp.connect %a %d" Ipaddr.pp ip port);
         let description = Fmt.str "tcp:%a:%d" Ipaddr.pp ip port in
         let label = match ip with
         | Ipaddr.V4 _ -> "TCPv4"
@@ -471,6 +472,7 @@ module Sockets = struct
           Lwt.catch (fun () ->
               let sockaddr = make_sockaddr (ip, port) in
               Uwt.Tcp.connect fd ~addr:sockaddr >>= fun () ->
+              Log.info (fun f -> f "Tcp.connect %a %d: success" Ipaddr.pp ip port);
               let error = Uwt.Tcp.enable_keepalive fd 1 in
               if Uwt.Int_result.is_error error then begin
                 Log.warn (fun f ->
@@ -486,6 +488,7 @@ module Sockets = struct
               of_fd ~idx ~label ~read_buffer_size ~description fd
               |> Lwt_result.return
             ) (fun e ->
+              Log.err (fun f -> f "Tcp.connect %a %d failwith with %s" Ipaddr.pp ip port (Printexc.to_string e));
               deregister_connection idx;
               log_exception_continue "Tcp.connect Uwt.Tcp.close_wait"
                 (fun () -> Uwt.Tcp.close_wait fd)
@@ -497,6 +500,7 @@ module Sockets = struct
         Lwt.return ()
 
       let shutdown_write { label; description; fd; closed; _ } =
+        Log.info (fun f -> f "Tcp.shutdown %s" description);
         try if not closed then Uwt.Tcp.shutdown fd else Lwt.return ()
         with
         | Unix.Unix_error(Unix.ENOTCONN, _, _) -> Lwt.return ()
@@ -510,12 +514,18 @@ module Sockets = struct
         let rec loop buf =
           if Cstruct.length buf = 0
           then Lwt.return (Ok (`Data ()))
-          else
+          else begin
+            Log.info (fun f -> f "Tcp.read %s" t.description);
             Uwt.Tcp.read_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
               ~buf:buf.Cstruct.buffer
             >>= function
-            | 0 -> Lwt.return (Ok `Eof)
-            | n -> loop (Cstruct.shift buf n)
+            | 0 ->
+              Log.info (fun f -> f "Tcp.read %s: EOF" t.description);
+              Lwt.return (Ok `Eof)
+            | n ->
+              Log.info (fun f -> f "Tcp.read %s: %d bytes" t.description n);
+              loop (Cstruct.shift buf n)
+            end
         in
         loop buf
 
@@ -523,12 +533,16 @@ module Sockets = struct
         (if Cstruct.length t.read_buffer = 0
          then t.read_buffer <- Cstruct.create t.read_buffer_size);
         Lwt.catch (fun () ->
+            Log.info (fun f -> f "Tcp.read %s" t.description);
             Uwt.Tcp.read_ba ~pos:t.read_buffer.Cstruct.off
               ~len:t.read_buffer.Cstruct.len t.fd
               ~buf:t.read_buffer.Cstruct.buffer
             >>= function
-            | 0 -> Lwt.return (Ok `Eof)
+            | 0 ->
+              Log.info (fun f -> f "Tcp.read %s: EOF" t.description);
+              Lwt.return (Ok `Eof)
             | n ->
+              Log.info (fun f -> f "Tcp.read %s: %d bytes" t.description n);
               let results = Cstruct.sub t.read_buffer 0 n in
               t.read_buffer <- Cstruct.shift t.read_buffer n;
               Lwt.return (Ok (`Data results))
@@ -546,16 +560,20 @@ module Sockets = struct
 
       let write t buf =
         Lwt.catch (fun () ->
+            Log.info (fun f -> f "Tcp.write %s %d bytes" t.description (buf.Cstruct.len - buf.Cstruct.off));
             Uwt.Tcp.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
               ~buf:buf.Cstruct.buffer
             >>= fun () ->
             Lwt.return (Ok ())
           ) (function
           | Unix.Unix_error(Unix.ECONNRESET, _, _) ->
+            Log.info (fun f -> f "Tcp.write %s: ECONNRESET" t.description);
             Lwt.return (Error `Closed)
           | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
+            Log.info (fun f -> f "Tcp.write %s: CANCELED" t.description);
             Lwt.return (Error `Closed)
           | e ->
+            Log.info (fun f -> f "Tcp.write %s: %s" t.description (Printexc.to_string e));
             Log.err (fun f ->
                 f "Socket.%s.write %s: caught %s returning Eof" t.label
                   t.description (Printexc.to_string e));
@@ -567,6 +585,7 @@ module Sockets = struct
             let rec loop = function
             | [] -> Lwt.return (Ok ())
             | buf :: bufs ->
+              Log.info (fun f -> f "Tcp.write %s %d bytes" t.description (buf.Cstruct.len - buf.Cstruct.off));
               Uwt.Tcp.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
                 ~buf:buf.Cstruct.buffer
               >>= fun () ->
@@ -575,8 +594,10 @@ module Sockets = struct
             loop bufs
           ) (function
           | Unix.Unix_error(Unix.ECONNRESET, _, _) ->
+            Log.info (fun f -> f "Tcp.write %s: ECONNRESET" t.description);
             Lwt.return (Error `Closed)
           | Unix.Unix_error(e, _, _) when Uwt.of_unix_error e = Uwt.ECANCELED ->
+            Log.info (fun f -> f "Tcp.write %s: CANCELED" t.description);
             Lwt.return (Error `Closed)
           | e ->
             Log.err (fun f ->
@@ -588,6 +609,7 @@ module Sockets = struct
       let close t =
         if not t.closed then begin
           t.closed <- true;
+          Log.info (fun f -> f "Tcp.close %s" t.description);
           log_exception_continue "Tcp.close Uwt.Tcp.close_wait"
             (fun () -> Uwt.Tcp.close_wait t.fd)
           >>= fun () ->
