@@ -560,7 +560,7 @@ module Sockets = struct
 
       let write t buf =
         Lwt.catch (fun () ->
-            Log.info (fun f -> f "Tcp.write %s %d bytes" t.description (buf.Cstruct.len - buf.Cstruct.off));
+            Log.info (fun f -> f "Tcp.write %s %d bytes" t.description buf.Cstruct.len);
             Uwt.Tcp.write_ba ~pos:buf.Cstruct.off ~len:buf.Cstruct.len t.fd
               ~buf:buf.Cstruct.buffer
             >>= fun () ->
