@@ -40,6 +40,7 @@ let worker f d =
       begin match d.request with
       | None -> ()
       | Some r ->
+        d.request <- None;
         let result = f r in
         Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later r.done_u result)
       end;
@@ -85,7 +86,15 @@ let of_bound_fd ?(mtu=1500) fd =
   ) in
   Lwt.return {fd; send; recv}
 
-let send flow buf = push flow.send buf
+let send flow buf =
+  Lwt.catch
+    (fun () -> push flow.send buf)
+    (function
+      | Unix.Unix_error(Unix.ENOBUFS, _, _) ->
+        (* If we're out of buffer space we have to drop the packet *)
+        Lwt.return 0
+      | e ->
+        Lwt.fail e)
 
 let recv flow buf = push flow.recv buf
 
@@ -104,12 +113,20 @@ let%test_unit "socketpair" =
       of_bound_fd b
       >>= fun b_flow ->
       let rec loop () =
-        send a_flow (Cstruct.of_string "hello")
-        >>= fun n ->
-        if n <> 5 then failwith (Printf.sprintf "send returned %d, expected 5" n);
-        Lwt_unix.sleep 1.
-        >>= fun () ->
-        loop () in
+        Lwt.catch (fun () ->
+          send a_flow (Cstruct.of_string "hello")
+          >>= fun n ->
+          Lwt.return (Some n)
+        ) (function
+          | Unix.Unix_error(Unix.ENOTCONN, _, _) -> Lwt.return None
+          | e -> Lwt.fail e)
+        >>= function
+        | None -> Lwt.return_unit
+        | Some n ->
+          if n <> 5 then failwith (Printf.sprintf "send returned %d, expected 5" n);
+          Lwt_unix.sleep 1.
+          >>= fun () ->
+          loop () in
       let _ = loop () in
       let buf = Cstruct.create 1024 in
       recv b_flow buf
