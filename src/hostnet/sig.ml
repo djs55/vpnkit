@@ -75,7 +75,7 @@ module type UNIX_DGRAM = sig
 
   val recv: flow -> Cstruct.t -> int Lwt.t
 
-  val close: flow -> unit
+  val close: flow -> unit Lwt.t
 end
 
 module type SOCKETS = sig

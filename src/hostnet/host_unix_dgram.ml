@@ -140,3 +140,21 @@ let%test_unit "socketpair" =
       Lwt.return_unit
     end
   end
+
+type error = [ `Closed ]
+
+let pp_error ppf `Closed = Fmt.string ppf "Closed"
+
+type write_error = error
+
+let pp_write_error = pp_error
+
+let read _t = Lwt.return @@ Ok (`Eof)
+
+let read_into _t _buf = Lwt.return @@ Ok (`Data ())
+
+let write _t _buf = Lwt.return @@ Ok ()
+
+let writev _t _bufs = Lwt.return @@ Ok ()
+
+let close t =  close t; Lwt.return_unit

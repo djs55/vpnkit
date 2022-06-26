@@ -6,3 +6,4 @@
 
 include Sig.UNIX_DGRAM
 
+include Sig.CONN with type flow := flow
