@@ -4,7 +4,7 @@ type protocol =
 
 type forward = {
     protocol: protocol;
-    dst_ip: Ipaddr.V4.t; (* needs to be a CIDR *)
+    dst_prefix: Ipaddr.V4.Prefix.t;
     dst_port: int;
     path: string; (* unix domain socket path *)
   }
