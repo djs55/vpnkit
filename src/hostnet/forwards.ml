@@ -74,6 +74,11 @@ let update xs =
     all := !static @ !dynamic;
     Log.info (fun f -> f "New Gateway forward configuration: %s" (to_string !all))
 
+module type Read_some = sig
+    include Mirage_flow.S
+    val read_some: flow -> int -> (Cstructs.t Mirage_flow.or_eof, error) result Lwt.t
+end
+
 module Read_some(FLOW: Mirage_flow.S) = (struct
     type flow = {
         mutable remaining: Cstruct.t;
@@ -120,14 +125,28 @@ module Read_some(FLOW: Mirage_flow.S) = (struct
     let writev flow = FLOW.writev flow.flow
     let close flow = FLOW.close flow.flow
 end: sig
-    include Mirage_flow.S
+    include Read_some
     val create: FLOW.flow -> flow
-    val read_some: flow -> int -> (Cstructs.t Mirage_flow.or_eof, error) result Lwt.t
 end)
 
-module Handshake(FLOW: Mirage_flow.S) = struct
+module Handshake(FLOW: Read_some) = struct
     module Message = struct
       type t = Cstruct.t
+      open Lwt.Infix
+      let read flow =
+        FLOW.read_some flow 2
+        >>= function
+        | Error e -> Lwt.return (Error (`Flow e))
+        | Ok `Eof -> Lwt.return (Error `Eof)
+        | Ok (`Data bufs) ->
+            let buf = Cstructs.to_cstruct bufs in
+            let len = Cstruct.LE.get_uint16 buf 0 in
+            FLOW.read_some flow len
+            >>= function
+            | Error e -> Lwt.return (Error (`Flow e))
+            | Ok `Eof -> Lwt.return (Error `Eof)
+            | Ok (`Data bufs) ->
+                Lwt.return (Ok (Cstructs.to_cstruct bufs))
 
     end
     module Request = struct
@@ -152,6 +171,15 @@ module Handshake(FLOW: Mirage_flow.S) = struct
             {
                 protocol; src_ip; src_port; dst_ip; dst_port;
             }
+        open Lwt.Infix
+        let read flow =
+            Message.read flow
+            >>= function
+            | Error (`Flow e) -> Lwt.return (Error (`Flow e))
+            | Error `Eof -> Lwt.return (Error `Eof)
+            | Ok buf ->
+                let j = Ezjsonm.from_string @@ Cstruct.to_string buf in
+                Lwt.return (Ok (of_json j))
     end
     module Response = struct
         type t = {
@@ -163,6 +191,15 @@ module Handshake(FLOW: Mirage_flow.S) = struct
             {
                 accepted;
             }
+        open Lwt.Infix
+        let read flow =
+            Message.read flow
+            >>= function
+            | Error (`Flow e) -> Lwt.return (Error (`Flow e))
+            | Error `Eof -> Lwt.return (Error `Eof)
+            | Ok buf ->
+                let j = Ezjsonm.from_string @@ Cstruct.to_string buf in
+                Lwt.return (Ok (of_json j))
     end
 
 end
