@@ -1,8 +1,10 @@
-type protocol = Tcp
-(* consider UDP later *)
+module Protocol: sig
+  type t = [ `Tcp ]
+  (* consider UDP later *)
+end
 
 type forward = {
-  protocol : protocol;
+  protocol : Protocol.t;
   dst_prefix : Ipaddr.V4.Prefix.t;
   dst_port : int;
   path : string; (* unix domain socket path *)
