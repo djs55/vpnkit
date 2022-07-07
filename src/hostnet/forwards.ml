@@ -75,9 +75,52 @@ module Tcp = struct
 end
 
 module Make
+    (Clock: Mirage_clock.MCLOCK)
     (Ip: Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
-    (Tcp:Mirage_flow_combinators.SHUTDOWNABLE)
+    (Tcp_flow:Mirage_flow_combinators.SHUTDOWNABLE)
     (Socket: Sig.SOCKETS)
 = struct
-    let handler ~dst:_ = None
+    open Lwt.Infix
+
+    module Proxy =
+      Mirage_flow_combinators.Proxy(Clock)(Tcp_flow)(Socket.Stream.Unix)
+
+    let with_forwarded_connection remote =
+        let listeners _port =
+          Log.debug (fun f -> f "TCP handshake complete");
+          let process flow =
+            Lwt.catch
+              (fun () ->
+                Lwt.finalize (fun () ->
+                    Proxy.proxy flow remote
+                    >>= function
+                    | Error e ->
+                      Log.debug (fun f ->
+                          f "TCP proxy failed with %a" Proxy.pp_error e);
+                      Lwt.return_unit
+                    | Ok (_l_stats, _r_stats) ->
+                      Lwt.return_unit
+                  ) (fun () -> Tcp_flow.close flow)
+              ) (fun e ->
+                Log.warn (fun f -> f "tcp_forward caught exception: %s" (Printexc.to_string e));
+                Lwt.return_unit
+              )
+          in Some process
+        in
+        Lwt.return listeners
+
+    let handler ~dst:(dst_ip, dst_port) =
+        if not(Tcp.mem (dst_ip, dst_port))
+        then Lwt.return None
+        else begin
+            let path = Tcp.find (dst_ip, dst_port) in
+            Socket.Stream.Unix.connect path
+            >>= function
+            | Error (`Msg m) ->
+                Log.info (fun f -> f "TCP forward %a, %d -> %s: %s, returning RST" Ipaddr.V4.pp dst_ip dst_port path m);
+                Lwt.return None
+            | Ok remote ->
+                Lwt.return @@ Some (with_forwarded_connection remote)
+        end
+
 end

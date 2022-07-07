@@ -106,7 +106,7 @@ struct
   module Http_forwarder =
     Hostnet_http.Make(Stack_ipv4)(Stack_udp)(Stack_tcp)(Host.Sockets)(Host.Dns)
   module Tcp_forwarder =
-    Forwards.Make(Stack_ipv4)(Stack_tcp)(Host.Sockets)
+    Forwards.Make(Clock)(Stack_ipv4)(Stack_tcp)(Host.Sockets)
 
   module Udp_nat = Hostnet_udp.Make(Host.Sockets)(Clock)(Host.Time)
   module Icmp_nat = Hostnet_icmp.Make(Host.Sockets)(Clock)(Host.Time)
@@ -741,8 +741,8 @@ struct
         Stack_tcp_wire.v
           ~src_port:dst_port ~dst:src_ip ~src:dst_ip ~dst_port:src_port
       in
-      let callback = Tcp_forwarder.handler ~dst:(dst_ip, dst_port) in
-      begin match callback with
+      begin Tcp_forwarder.handler ~dst:(dst_ip, dst_port)
+      >>= function
       | None ->
         Endpoint.input_tcp t.endpoint ~id ~syn ~rst (Ipaddr.V4 dst_ip, dst_port)
           raw (* common case *)

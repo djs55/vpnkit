@@ -28,11 +28,12 @@ module Tcp : sig
 end
 
 module Make
+    (Clock: Mirage_clock.MCLOCK)
     (Ip : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
     (Tcp : Mirage_flow_combinators.SHUTDOWNABLE)
     (Socket : Sig.SOCKETS) : sig
   val handler :
     dst:Ipaddr.V4.t * int ->
-    (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option
+    (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option Lwt.t
   (** Intercept outgoing TCP flows and redirect to a proxy *)
 end
