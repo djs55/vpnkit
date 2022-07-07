@@ -147,7 +147,10 @@ module Handshake(FLOW: Read_some) = struct
             | Ok `Eof -> Lwt.return (Error `Eof)
             | Ok (`Data bufs) ->
                 Lwt.return (Ok (Cstructs.to_cstruct bufs))
-
+      let write flow t =
+        let len = Cstruct.create 2 in
+        Cstruct.LE.set_uint16 len 0 (Cstruct.length t);
+        FLOW.writev flow [ len; t ]
     end
     module Request = struct
         type t = {
@@ -171,6 +174,17 @@ module Handshake(FLOW: Read_some) = struct
             {
                 protocol; src_ip; src_port; dst_ip; dst_port;
             }
+
+        let to_json t =
+            let open Ezjsonm in
+            dict [
+                "protocol", Protocol.to_json t.protocol;
+                "src_ip", string (Ipaddr.V4.to_string t.src_ip);
+                "src_port", int t.src_port;
+                "dst_ip", string (Ipaddr.V4.to_string t.dst_ip);
+                "dst_port", int t.dst_port;
+            ]
+
         open Lwt.Infix
         let read flow =
             Message.read flow
@@ -180,6 +194,9 @@ module Handshake(FLOW: Read_some) = struct
             | Ok buf ->
                 let j = Ezjsonm.from_string @@ Cstruct.to_string buf in
                 Lwt.return (Ok (of_json j))
+
+        let write flow t =
+            Message.write flow @@ Cstruct.of_string @@ Ezjsonm.to_string @@ to_json t
     end
     module Response = struct
         type t = {
@@ -191,6 +208,11 @@ module Handshake(FLOW: Read_some) = struct
             {
                 accepted;
             }
+        let to_json t =
+            let open Ezjsonm in
+            dict [
+                "accepted", bool t.accepted;
+            ]
         open Lwt.Infix
         let read flow =
             Message.read flow
@@ -200,6 +222,9 @@ module Handshake(FLOW: Read_some) = struct
             | Ok buf ->
                 let j = Ezjsonm.from_string @@ Cstruct.to_string buf in
                 Lwt.return (Ok (of_json j))
+
+        let write flow t =
+            Message.write flow @@ Cstruct.of_string @@ Ezjsonm.to_string @@ to_json t
     end
 
 end
