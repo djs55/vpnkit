@@ -1,29 +1,38 @@
-type protocol =
-  | Tcp
-  (* consider UDP later *)
+type protocol = Tcp
+(* consider UDP later *)
 
 type forward = {
-    protocol: protocol;
-    dst_prefix: Ipaddr.V4.Prefix.t;
-    dst_port: int;
-    path: string; (* unix domain socket path *)
-  }
+  protocol : protocol;
+  dst_prefix : Ipaddr.V4.Prefix.t;
+  dst_port : int;
+  path : string; (* unix domain socket path *)
+}
 
 type t = forward list
 
-val to_string: t -> string
-val of_string: string -> (t, [`Msg of string]) result
+val to_string : t -> string
+val of_string : string -> (t, [ `Msg of string ]) result
 
-val set_static: t -> unit
+val set_static : t -> unit
 (** update the static forwarding table *)
 
-val update: t -> unit
+val update : t -> unit
 (** update the dynamic forwarding table *)
 
-module Tcp: sig
-  val mem: Ipaddr.V4.t * int -> bool
+module Tcp : sig
+  val mem : Ipaddr.V4.t * int -> bool
   (** [mem dst_ip dst_port] is true if there is a rule to forward TCP to [dst_ip,dst_port]. *)
 
-  val find: Ipaddr.V4.t * int -> string
+  val find : Ipaddr.V4.t * int -> string
   (** [find dst_ip dst_port] returns the internal path to forward the TCP connection to. *)
+end
+
+module Make
+    (Ip : Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
+    (Tcp : Mirage_flow_combinators.SHUTDOWNABLE)
+    (Socket : Sig.SOCKETS) : sig
+  val handler :
+    dst:Ipaddr.V4.t * int ->
+    (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option
+  (** Intercept outgoing TCP flows and redirect to a proxy *)
 end

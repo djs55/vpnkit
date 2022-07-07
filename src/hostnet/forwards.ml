@@ -73,3 +73,11 @@ module Tcp = struct
     let f = List.find (fun f -> f.protocol = Tcp && Ipaddr.V4.Prefix.mem dst_ip f.dst_prefix && f.dst_port = dst_port) !all in
     f.path
 end
+
+module Make
+    (Ip: Tcpip.Ip.S with type ipaddr = Ipaddr.V4.t)
+    (Tcp:Mirage_flow_combinators.SHUTDOWNABLE)
+    (Socket: Sig.SOCKETS)
+= struct
+    let handler ~dst:_ = None
+end
