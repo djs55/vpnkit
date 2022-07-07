@@ -75,16 +75,16 @@ let update xs =
     Log.info (fun f -> f "New Gateway forward configuration: %s" (to_string !all))
 
 module type Read_some = sig
-    include Mirage_flow.S
+    include Mirage_flow_combinators.SHUTDOWNABLE
     val read_some: flow -> int -> (Cstructs.t Mirage_flow.or_eof, error) result Lwt.t
 end
 
-module Read_some(FLOW: Mirage_flow.S) = (struct
+module Read_some(FLOW: Mirage_flow_combinators.SHUTDOWNABLE) = (struct
     type flow = {
         mutable remaining: Cstruct.t;
         flow: FLOW.flow;
     }
-    let create flow = {
+    let connect flow = {
         remaining = Cstruct.create 0;
         flow = flow;
     }
@@ -124,15 +124,19 @@ module Read_some(FLOW: Mirage_flow.S) = (struct
     let write flow = FLOW.write flow.flow
     let writev flow = FLOW.writev flow.flow
     let close flow = FLOW.close flow.flow
+    let shutdown_write flow = FLOW.shutdown_write flow.flow
+    let shutdown_read flow = FLOW.shutdown_read flow.flow
 end: sig
     include Read_some
-    val create: FLOW.flow -> flow
+    val connect: FLOW.flow -> flow
 end)
 
 module Handshake(FLOW: Read_some) = struct
     module Message = struct
-      type t = Cstruct.t
       open Lwt.Infix
+      let pp_error ppf = function
+      | `Flow e -> FLOW.pp_error ppf e
+      | `Eof -> Fmt.string ppf "EOF while reading handshake"
       let read flow =
         FLOW.read_some flow 2
         >>= function
@@ -244,9 +248,10 @@ module Make
 = struct
     open Lwt.Infix
 
+    module Remote = Read_some(Socket.Stream.Unix)
     module Proxy =
-      Mirage_flow_combinators.Proxy(Clock)(Tcp_flow)(Socket.Stream.Unix)
-
+      Mirage_flow_combinators.Proxy(Clock)(Tcp_flow)(Remote)
+    module Handshake = Handshake(Remote)
     let with_forwarded_connection remote =
         let listeners _port =
           Log.debug (fun f -> f "TCP handshake complete");
@@ -271,7 +276,7 @@ module Make
         in
         Lwt.return listeners
 
-    let handler ~dst:(dst_ip, dst_port) =
+    let handler ~src:(src_ip, src_port) ~dst:(dst_ip, dst_port) =
         if not(Tcp.mem (dst_ip, dst_port))
         then Lwt.return None
         else begin
@@ -281,8 +286,28 @@ module Make
             | Error (`Msg m) ->
                 Log.info (fun f -> f "TCP forward %a, %d -> %s: %s, returning RST" Ipaddr.V4.pp dst_ip dst_port path m);
                 Lwt.return None
-            | Ok remote ->
-                Lwt.return @@ Some (with_forwarded_connection remote)
+            | Ok flow ->
+                let remote = Remote.connect flow in
+                Handshake.Request.write remote {
+                    Handshake.Request.protocol = `Tcp;
+                    src_ip = src_ip;
+                    src_port = src_port;
+                    dst_ip = dst_ip;
+                    dst_port = dst_port;
+                }
+                >>= function
+                | Error e ->
+                    Log.info (fun f -> f "TCP forward %a, %d -> %s: %a, returning RST" Ipaddr.V4.pp dst_ip dst_port path Remote.pp_write_error e);
+                    Lwt.return None
+                | Ok () ->
+                    Handshake.Response.read remote
+                    >>= function
+                    | Error e ->
+                        Log.info (fun f -> f "TCP forward %a, %d -> %s: %a, returning RST" Ipaddr.V4.pp dst_ip dst_port path Handshake.Message.pp_error e);
+                        Lwt.return None
+                    | Ok { Handshake.Response.accepted = false } -> Lwt.return None
+                    | Ok { Handshake.Response.accepted = true } ->
+                        Lwt.return @@ Some (with_forwarded_connection remote)
         end
 
 end

@@ -35,6 +35,7 @@ module Make
     (Tcp : Mirage_flow_combinators.SHUTDOWNABLE)
     (Socket : Sig.SOCKETS) : sig
   val handler :
+    src:Ipaddr.V4.t * int ->
     dst:Ipaddr.V4.t * int ->
     (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option Lwt.t
   (** Intercept outgoing TCP flows and redirect to a proxy *)

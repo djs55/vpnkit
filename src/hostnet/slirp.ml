@@ -741,7 +741,7 @@ struct
         Stack_tcp_wire.v
           ~src_port:dst_port ~dst:src_ip ~src:dst_ip ~dst_port:src_port
       in
-      begin Tcp_forwarder.handler ~dst:(dst_ip, dst_port)
+      begin Tcp_forwarder.handler ~src:(src_ip, src_port) ~dst:(dst_ip, dst_port)
       >>= function
       | None ->
         Endpoint.input_tcp t.endpoint ~id ~syn ~rst (Ipaddr.V4 dst_ip, dst_port)
