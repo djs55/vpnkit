@@ -40,3 +40,12 @@ module Make
     (int -> (Tcp.flow -> unit Lwt.t) option) Lwt.t option Lwt.t
   (** Intercept outgoing TCP flows and redirect to a proxy *)
 end
+
+module Test
+    (Clock: Mirage_clock.MCLOCK) : sig
+  type server
+
+  val start_forwarder: string -> server Lwt.t
+
+  val shutdown: server -> unit Lwt.t
+end
