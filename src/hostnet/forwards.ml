@@ -283,12 +283,15 @@ module Make
         then Lwt.return None
         else begin
             let path = Tcp.find (dst_ip, dst_port) in
+            let req = Fmt.str "%a, %d -> %s" Ipaddr.V4.pp dst_ip dst_port path in
+            Log.info (fun f -> f "%s: connecting" req);
             Socket.Stream.Unix.connect path
             >>= function
             | Error (`Msg m) ->
-                Log.info (fun f -> f "TCP forward %a, %d -> %s: %s, returning RST" Ipaddr.V4.pp dst_ip dst_port path m);
+                Log.info (fun f -> f "%s: %s, returning RST" req m);
                 Lwt.return None
             | Ok flow ->
+                Log.info (fun f -> f "%s: writing handshake" req);
                 let remote = Remote.connect flow in
                 Handshake.Request.write remote {
                     Handshake.Request.protocol = `Tcp;
@@ -299,16 +302,20 @@ module Make
                 }
                 >>= function
                 | Error e ->
-                    Log.info (fun f -> f "TCP forward %a, %d -> %s: %a, returning RST" Ipaddr.V4.pp dst_ip dst_port path Remote.pp_write_error e);
+                    Log.info (fun f -> f "%s: %a, returning RST" req Remote.pp_write_error e);
                     Lwt.return None
                 | Ok () ->
+                    Log.info (fun f -> f "%s: reading handshake" req);
                     Handshake.Response.read remote
                     >>= function
                     | Error e ->
-                        Log.info (fun f -> f "TCP forward %a, %d -> %s: %a, returning RST" Ipaddr.V4.pp dst_ip dst_port path Handshake.Message.pp_error e);
+                        Log.info (fun f -> f "%s: %a, returning RST" req Handshake.Message.pp_error e);
                         Lwt.return None
-                    | Ok { Handshake.Response.accepted = false } -> Lwt.return None
+                    | Ok { Handshake.Response.accepted = false } ->
+                        Log.info (fun f -> f "%s: request rejected" req);
+                        Lwt.return None
                     | Ok { Handshake.Response.accepted = true } ->
+                        Log.info (fun f -> f "%s: forwarding connection" req);
                         Lwt.return @@ Some (with_forwarded_connection remote)
         end
     end
