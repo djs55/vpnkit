@@ -335,57 +335,53 @@ module Test(Clock: Mirage_clock.MCLOCK) = struct
     Host.Sockets.Stream.Unix.bind path
     >>= fun s ->
     Host.Sockets.Stream.Unix.listen s (fun flow ->
-        Lwt.finalize
-            (fun () ->
-                let local = Remote.connect flow in
-                Handshake.Request.read local
-                >>= function
-                | Error e ->
-                    Log.info (fun f -> f "reading handshake request %a" Handshake.Message.pp_error e);
-                    Lwt.return_unit
-                | Ok h ->
-                    let req = Handshake.Request.to_string h in
-                    Log.info (fun f -> f "%s: connecting" req);
-                    Host.Sockets.Stream.Tcp.connect (Ipaddr.V4 h.Handshake.Request.dst_ip, h.Handshake.Request.dst_port)
+        Log.info (fun f -> f "accepted flow");
+        let local = Remote.connect flow in
+        Handshake.Request.read local
+        >>= function
+        | Error e ->
+            Log.info (fun f -> f "reading handshake request %a" Handshake.Message.pp_error e);
+            Lwt.return_unit
+        | Ok h ->
+            let req = Handshake.Request.to_string h in
+            Log.info (fun f -> f "%s: connecting" req);
+            Host.Sockets.Stream.Tcp.connect (Ipaddr.V4 h.Handshake.Request.dst_ip, h.Handshake.Request.dst_port)
+            >>= function
+            | Error (`Msg m) ->
+                begin
+                    Log.info (fun f -> f "%s: %s" req m);
+                    Handshake.Response.write local { Handshake.Response.accepted = false }
                     >>= function
-                    | Error (`Msg m) ->
-                        begin
-                            Log.info (fun f -> f "%s: %s" req m);
-                            Handshake.Response.write local { Handshake.Response.accepted = false }
+                    | Error e ->
+                        Log.info (fun f -> f "%s: writing handshake response %a" req Remote.pp_write_error e);
+                        Lwt.return_unit
+                    | Ok () ->
+                        Log.info (fun f -> f "%s: returned handshake response" req);
+                        Lwt.return_unit
+                end
+            | Ok remote ->
+                Log.info (fun f -> f "%s: connected" req);
+                Lwt.finalize
+                    (fun () ->
+                        Handshake.Response.write local { Handshake.Response.accepted = true }
+                        >>= function
+                        | Error e ->
+                            Log.info (fun f -> f "%s: writing handshake response %a" req Remote.pp_write_error e);
+                            Lwt.return_unit
+                        | Ok () ->
+                            Log.info (fun f -> f "%s: proxying data" req);
+                            Proxy.proxy local remote
                             >>= function
                             | Error e ->
-                                Log.info (fun f -> f "%s: writing handshake response %a" req Remote.pp_write_error e);
+                                Log.info (fun f ->
+                                    f "%s: TCP proxy failed with %a" req Proxy.pp_error e);
                                 Lwt.return_unit
-                            | Ok () ->
-                                Log.info (fun f -> f "%s: returned handshake response" req);
+                            | Ok (_l_stats, _r_stats) ->
                                 Lwt.return_unit
-                        end
-                    | Ok remote ->
-                        Log.info (fun f -> f "%s: connected" req);
-                        Lwt.finalize
-                            (fun () ->
-                                Handshake.Response.write local { Handshake.Response.accepted = true }
-                                >>= function
-                                | Error e ->
-                                    Log.info (fun f -> f "%s: writing handshake response %a" req Remote.pp_write_error e);
-                                    Lwt.return_unit
-                                | Ok () ->
-                                    Log.info (fun f -> f "%s: proxying data" req);
-                                    Proxy.proxy local remote
-                                    >>= function
-                                    | Error e ->
-                                        Log.info (fun f ->
-                                            f "%s: TCP proxy failed with %a" req Proxy.pp_error e);
-                                        Lwt.return_unit
-                                    | Ok (_l_stats, _r_stats) ->
-                                        Lwt.return_unit
-                            ) (fun () ->
-                                Log.info (fun f -> f "%s: disconnecting from remote" req);
-                                Host.Sockets.Stream.Tcp.close remote
-                            )
-            ) (fun () ->
-                Host.Sockets.Stream.Unix.close flow
-            )
+                    ) (fun () ->
+                        Log.info (fun f -> f "%s: disconnecting from remote" req);
+                        Host.Sockets.Stream.Tcp.close remote
+                    )
     );
     Lwt.return s
 
