@@ -67,12 +67,12 @@ let all = ref []
 let set_static xs =
     static := xs;
     all := !static @ !dynamic;
-    Log.info (fun f -> f "New Gateway forward configuration: %s" (to_string !all))
+    Log.info (fun f -> f "New Forward configuration: %s" (to_string !all))
 
 let update xs =
     dynamic := xs;
     all := !static @ !dynamic;
-    Log.info (fun f -> f "New Gateway forward configuration: %s" (to_string !all))
+    Log.info (fun f -> f "New Forward configuration: %s" (to_string !all))
 
 module type Read_some = sig
     include Mirage_flow_combinators.SHUTDOWNABLE
