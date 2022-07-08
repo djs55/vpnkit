@@ -95,7 +95,7 @@ module Read_some(FLOW: Mirage_flow_combinators.SHUTDOWNABLE) = (struct
     let read_some flow len =
         let open Lwt.Infix in
         let rec loop acc len =
-            if Cstruct.length flow.remaining = 0 then begin
+            if Cstruct.length flow.remaining = 0 && len > 0 then begin
                 FLOW.read flow.flow
                 >>= function
                 | Error e -> Lwt.return (Error e)
@@ -104,7 +104,7 @@ module Read_some(FLOW: Mirage_flow_combinators.SHUTDOWNABLE) = (struct
                     loop acc len
                 | Ok `Eof -> Lwt.return (Ok `Eof)
             end else begin
-                if Cstruct.length flow.remaining <= len then begin
+                if Cstruct.length flow.remaining < len then begin
                     let take = flow.remaining in
                     flow.remaining <- Cstruct.create 0;
                     loop (take :: acc) (len - (Cstruct.length take))
