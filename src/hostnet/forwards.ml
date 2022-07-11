@@ -307,6 +307,8 @@ module Make
                 >>= function
                 | Error e ->
                     Log.info (fun f -> f "%s: %a, returning RST" req Remote.pp_write_error e);
+                    Remote.close remote
+                    >>= fun () ->
                     Lwt.return None
                 | Ok () ->
                     Log.info (fun f -> f "%s: reading handshake" req);
@@ -314,9 +316,13 @@ module Make
                     >>= function
                     | Error e ->
                         Log.info (fun f -> f "%s: %a, returning RST" req Handshake.Message.pp_error e);
+                        Remote.close remote
+                        >>= fun () ->
                         Lwt.return None
                     | Ok { Handshake.Response.accepted = false } ->
                         Log.info (fun f -> f "%s: request rejected" req);
+                        Remote.close remote
+                        >>= fun () ->
                         Lwt.return None
                     | Ok { Handshake.Response.accepted = true } ->
                         Log.info (fun f -> f "%s: forwarding connection" req);
