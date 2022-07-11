@@ -1,5 +1,5 @@
 let src =
-    let src = Logs.Src.create "gateway_forwards" ~doc:"Manages IP forwarding from the gateway IP" in
+    let src = Logs.Src.create "forwards" ~doc:"Forwards TCP/UDP streams to local services" in
     Logs.Src.set_level src (Some Logs.Info);
     src
 
