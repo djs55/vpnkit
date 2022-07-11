@@ -57,6 +57,8 @@ let of_string x =
         Ok (of_json @@ Ezjsonm.from_string x)
     with Ezjsonm.Parse_error(_v, msg) ->
         Error (`Msg msg)
+    | e ->
+        Error (`Msg (Printf.sprintf "parsing %s: %s" x (Printexc.to_string e)))
 
 let dynamic = ref []
 
