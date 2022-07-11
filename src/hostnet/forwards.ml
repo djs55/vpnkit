@@ -238,9 +238,11 @@ module Handshake(FLOW: Read_some) = struct
 end
 
 module Tcp = struct
-  let mem (dst_ip, dst_port) = List.exists (fun f -> f.protocol = `Tcp && Ipaddr.V4.Prefix.mem dst_ip f.dst_prefix && f.dst_port = dst_port) !all
+  let any_port = 0
+
+  let mem (dst_ip, dst_port) = List.exists (fun f -> f.protocol = `Tcp && Ipaddr.V4.Prefix.mem dst_ip f.dst_prefix && (f.dst_port = any_port || f.dst_port = dst_port)) !all
   let find (dst_ip, dst_port) =
-    let f = List.find (fun f -> f.protocol = `Tcp && Ipaddr.V4.Prefix.mem dst_ip f.dst_prefix && f.dst_port = dst_port) !all in
+    let f = List.find (fun f -> f.protocol = `Tcp && Ipaddr.V4.Prefix.mem dst_ip f.dst_prefix && (f.dst_port = any_port || f.dst_port = dst_port)) !all in
     f.path
 end
 
