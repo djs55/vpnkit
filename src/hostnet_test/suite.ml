@@ -135,7 +135,7 @@ let test_tcp_forwards () =
     Forwards.update [
       {
         Forwards.protocol = `Tcp;
-        dst_prefix = Ipaddr.V4.Prefix.global;
+        dst_prefix = Ipaddr.V4 Ipaddr.V4.Prefix.global;
         dst_port = 80;
         path = path;
       }

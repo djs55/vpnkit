@@ -105,8 +105,6 @@ struct
       (Host.Time)(Clock)(Recorder)
   module Http_forwarder =
     Hostnet_http.Make(Stack_ipv4)(Stack_udp)(Stack_tcp)(Host.Sockets)(Host.Dns)
-  module Tcp_forwarder =
-    Forwards.Make(Clock)(Stack_ipv4)(Stack_tcp)(Host.Sockets)
 
   module Udp_nat = Hostnet_udp.Make(Host.Sockets)(Clock)(Host.Time)
   module Icmp_nat = Hostnet_icmp.Make(Host.Sockets)(Clock)(Host.Time)
@@ -195,7 +193,10 @@ struct
 
       type t = {
         id: Stack_tcp_wire.t;
-        mutable socket: Host.Sockets.Stream.Tcp.flow option;
+        mutable socket: [
+          | `Tcp of Host.Sockets.Stream.Tcp.flow
+          | `Unix of Forwards.Unix.flow
+         ] option;
         mutable last_active_time_ns: int64;
       }
 
@@ -225,6 +226,21 @@ struct
         let t = { id; socket; last_active_time_ns } in
         all := Id.Map.add id t !all;
         t
+      let close id t =
+        (* Closing the socket should cause the proxy to exit cleanly *)
+        begin match t.socket with
+        | Some (`Tcp socket) ->
+          t.socket <- None;
+          Host.Sockets.Stream.Tcp.close socket
+        | Some (`Unix socket) ->
+          t.socket <- None;
+          Forwards.Unix.close socket
+        | None ->
+          (* If we have a Tcp.Flow still in the table, there should still be an
+             active socket, otherwise the state has gotten out-of-sync *)
+          Log.warn (fun f -> f "%s: no socket registered, possible socket leak" (string_of_id id));
+          Lwt.return_unit
+        end
       let remove id =
         all := Id.Map.remove id !all
       let mem id = Id.Map.mem id !all
@@ -301,17 +317,7 @@ struct
         end;
         Tcp.Flow.remove id;
         t.established <- Tcp.Id.Set.remove id t.established;
-        begin match tcp.Tcp.Flow.socket with
-        | Some socket ->
-          (* Note this should cause the proxy to exit cleanly *)
-          tcp.Tcp.Flow.socket <- None;
-          Host.Sockets.Stream.Tcp.close socket
-        | None ->
-          (* If we have a Tcp.Flow still in the table, there should still be an
-             active socket, otherwise the state has gotten out-of-sync *)
-          Log.warn (fun f -> f "%s: no socket registered, possible socket leak" (string_of_id id));
-          Lwt.return_unit
-        end
+        Tcp.Flow.close id tcp
       end else Lwt.return_unit
 
     let destroy t =
@@ -374,8 +380,10 @@ struct
         Stack_tcp.input t.tcp4 ~src ~dst buf
       end
 
-    module Proxy =
+    module Tcp_Proxy =
       Mirage_flow_combinators.Proxy(Clock)(Stack_tcp)(Host.Sockets.Stream.Tcp)
+    module Unix_Proxy =
+      Mirage_flow_combinators.Proxy(Clock)(Stack_tcp)(Forwards.Unix)
 
     let forward_via_tcp_socket t ~id (ip, port) () =
       Host.Sockets.Stream.Tcp.connect (ip, port)
@@ -386,7 +394,7 @@ struct
               Ipaddr.pp ip port m);
         Lwt.return (fun _ -> None)
       | Ok socket ->
-        let tcp = Tcp.Flow.create id socket in
+        let tcp = Tcp.Flow.create id (`Tcp socket) in
         let listeners port =
           Log.debug (fun f ->
               f "%a:%d handshake complete" Ipaddr.pp ip port);
@@ -397,14 +405,71 @@ struct
                   f "%s callback called on closed socket"
                     (Tcp.Flow.to_string tcp));
               Lwt.return_unit
-            | Some socket ->
+            | Some (`Unix _) ->
+              (* Should never happen but not currently forbidden by the types *)
+              Log.err (fun f ->
+                  f "%s callback has a Unix socket, expected TCP"
+                  (Tcp.Flow.to_string tcp));
+              close_flow t ~id `Reset
+            | Some (`Tcp socket) ->
               Lwt.finalize (fun () ->
-                Proxy.proxy flow socket
+                Tcp_Proxy.proxy flow socket
                 >>= function
                 | Error e ->
                   Log.debug (fun f ->
                       f "%s proxy failed with %a"
-                        (Tcp.Flow.to_string tcp) Proxy.pp_error e);
+                        (Tcp.Flow.to_string tcp) Tcp_Proxy.pp_error e);
+                  Lwt.return_unit
+                | Ok (_l_stats, _r_stats) ->
+                  Lwt.return_unit
+              ) (fun () ->
+                Log.debug (fun f -> f "%s proxy terminated" (Tcp.Flow.to_string tcp));
+                close_flow t ~id `Fin
+              )
+          in
+          Some f
+        in
+        Lwt.return listeners
+
+    let forward_via_unix_socket t ~id (ip, port) () =
+      Forwards.Unix.connect (ip, port)
+      >>= function
+      | Error `ECONNREFUSED ->
+        Log.debug (fun f ->
+          f "%a:%d: ECONNREFUSED, sending RST"
+            Ipaddr.pp ip port);
+        Lwt.return (fun _ -> None)
+      | Error (`Msg m) ->
+        Log.debug (fun f ->
+            f "%a:%d: failed to connect, sending RST: %s"
+              Ipaddr.pp ip port m);
+        Lwt.return (fun _ -> None)
+      | Ok socket ->
+        let tcp = Tcp.Flow.create id (`Unix socket) in
+        let listeners port =
+          Log.debug (fun f ->
+              f "%a:%d handshake complete" Ipaddr.pp ip port);
+          let f flow =
+            match tcp.Tcp.Flow.socket with
+            | None ->
+              Log.err (fun f ->
+                  f "%s callback called on closed socket"
+                    (Tcp.Flow.to_string tcp));
+              Lwt.return_unit
+            | Some (`Tcp _) ->
+              (* Should never happen but not currently forbidden by the types *)
+              Log.err (fun f ->
+                  f "%s callback has a TCP socket, expected Unix"
+                  (Tcp.Flow.to_string tcp));
+              close_flow t ~id `Reset
+            | Some (`Unix socket) ->
+              Lwt.finalize (fun () ->
+                Unix_Proxy.proxy flow socket
+                >>= function
+                | Error e ->
+                  Log.debug (fun f ->
+                      f "%s proxy failed with %a"
+                        (Tcp.Flow.to_string tcp) Unix_Proxy.pp_error e);
                   Lwt.return_unit
                 | Ok (_l_stats, _r_stats) ->
                   Lwt.return_unit
@@ -735,22 +800,15 @@ struct
     (* Transparent TCP forward? *)
     | Ipv4 { src = src_ip ; dst = dst_ip;
              payload = Tcp { src = src_port;
-                             dst = dst_port; syn; rst; raw; _ }; _ } when Forwards.Tcp.mem (dst_ip, dst_port) ->
+                             dst = dst_port; syn; rst; raw; _ }; _ } when Forwards.Tcp.mem (Ipaddr.V4 dst_ip, dst_port) ->
       let id =
         Stack_tcp_wire.v
           ~src_port:dst_port ~dst:src_ip ~src:dst_ip ~dst_port:src_port
       in
-      begin Tcp_forwarder.handler ~src:(src_ip, src_port) ~dst:(dst_ip, dst_port)
-      >>= function
-      | None ->
-        Endpoint.input_tcp t.endpoint ~id ~syn ~rst (Ipaddr.V4 dst_ip, dst_port)
-          raw (* common case *)
-        >|= ok
-      | Some cb ->
-        cb >>= fun cb ->
-        Endpoint.intercept_tcp_syn t.endpoint ~id ~syn (fun _ -> Lwt.return @@ with_no_keepalive cb) raw
-        >|= ok
-      end
+      Endpoint.intercept_tcp t.endpoint ~id ~syn ~rst (fun () ->
+        Endpoint.forward_via_unix_socket t.endpoint ~id (Ipaddr.V4 dst_ip, dst_port) ()
+      ) raw
+      >|= ok
 
     (* Transparent HTTP intercept? *)
     | Ipv4 { src = dest_ip ; dst = local_ip;
