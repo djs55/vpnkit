@@ -278,8 +278,6 @@ module Unix = struct
   module Remote = Read_some (FLOW)
   module Handshake = Handshake (Remote)
 
-  type address = Ipaddr.t * int
-
   type flow = { flow : Remote.flow }
 
   let connect ?read_buffer_size:_ (dst_ip, dst_port) =
@@ -342,6 +340,83 @@ module Unix = struct
   let close flow = Remote.close flow.flow
   let shutdown_write flow = Remote.shutdown_write flow.flow
   let shutdown_read flow = Remote.shutdown_read flow.flow
+end
+
+module type TCP = Sig.FLOW_CLIENT with type address = Ipaddr.t * int
+
+module Stream = struct
+  module Tcp = struct
+    type address = Ipaddr.t * int
+
+    module Direct = Host.Sockets.Stream.Tcp
+    module Forwarded = Unix
+
+    type flow = [ `Direct of Direct.flow | `Forwarded of Forwarded.flow ]
+
+    open Lwt.Infix
+
+    let connect ?read_buffer_size:_ (ip, port) =
+      if Tcp.mem (ip, port) then
+        Unix.connect (ip, port) >>= function
+        | Ok flow -> Lwt.return (Ok (`Forwarded flow))
+        | Error e -> Lwt.return (Error e)
+      else
+        Direct.connect (ip, port) >>= function
+        | Ok flow -> Lwt.return (Ok (`Direct flow))
+        | Error e -> Lwt.return (Error e)
+
+    type error = [ `Direct of Direct.error | `Forwarded of Forwarded.error ]
+
+    let pp_error ppf = function
+      | `Direct err -> Direct.pp_error ppf err
+      | `Forwarded err -> Forwarded.pp_error ppf err
+
+    type write_error =
+      [ `Closed
+      | `Direct of Direct.write_error
+      | `Forwarded of Forwarded.write_error ]
+
+    let pp_write_error ppf = function
+      | `Closed -> Fmt.string ppf "Closed"
+      | `Direct err -> Direct.pp_write_error ppf err
+      | `Forwarded err -> Forwarded.pp_write_error ppf err
+
+    let wrap_direct_error t =
+      t >>= function
+      | Ok x -> Lwt.return (Ok x)
+      | Error err -> Lwt.return (Error (`Direct err))
+
+    let wrap_forwarded_error t =
+      t >>= function
+      | Ok x -> Lwt.return (Ok x)
+      | Error err -> Lwt.return (Error (`Forwarded err))
+
+    let read = function
+      | `Direct flow -> wrap_direct_error @@ Direct.read flow
+      | `Forwarded flow -> wrap_forwarded_error @@ Forwarded.read flow
+
+    let write flow bufs =
+      match flow with
+      | `Direct flow -> wrap_direct_error @@ Direct.write flow bufs
+      | `Forwarded flow -> wrap_forwarded_error @@ Forwarded.write flow bufs
+
+    let writev flow bufs =
+      match flow with
+      | `Direct flow -> wrap_direct_error @@ Direct.writev flow bufs
+      | `Forwarded flow -> wrap_forwarded_error @@ Forwarded.writev flow bufs
+
+    let close = function
+      | `Direct flow -> Direct.close flow
+      | `Forwarded flow -> Forwarded.close flow
+
+    let shutdown_write = function
+      | `Direct flow -> Direct.shutdown_write flow
+      | `Forwarded flow -> Forwarded.shutdown_write flow
+
+    let shutdown_read = function
+      | `Direct flow -> Direct.shutdown_read flow
+      | `Forwarded flow -> Forwarded.shutdown_read flow
+  end
 end
 
 module Test (Clock : Mirage_clock.MCLOCK) = struct

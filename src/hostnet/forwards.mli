@@ -29,7 +29,9 @@ module Tcp : sig
   (** [find dst_ip dst_port] returns the internal path to forward the TCP connection to. *)
 end
 
-module Unix : Sig.FLOW_CLIENT with type address = Ipaddr.t * int
+module Stream : sig
+  module Tcp : Sig.FLOW_CLIENT with type address = Ipaddr.t * int
+end
 
 module Test (Clock : Mirage_clock.MCLOCK) : sig
   type server
