@@ -436,11 +436,6 @@ struct
     let forward_via_unix_socket t ~id (ip, port) () =
       Forwards.Unix.connect (ip, port)
       >>= function
-      | Error `ECONNREFUSED ->
-        Log.debug (fun f ->
-          f "%a:%d: ECONNREFUSED, sending RST"
-            Ipaddr.pp ip port);
-        Lwt.return (fun _ -> None)
       | Error (`Msg m) ->
         Log.debug (fun f ->
             f "%a:%d: failed to connect, sending RST: %s"

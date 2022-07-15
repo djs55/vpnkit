@@ -278,9 +278,11 @@ module Unix = struct
   module Remote = Read_some (FLOW)
   module Handshake = Handshake (Remote)
 
+  type address = Ipaddr.t * int
+
   type flow = { flow : Remote.flow }
 
-  let connect (dst_ip, dst_port) =
+  let connect ?read_buffer_size:_ (dst_ip, dst_port) =
     let open Lwt.Infix in
     let path = Tcp.find (dst_ip, dst_port) in
     let req = Fmt.str "%a, %d -> %s" Ipaddr.pp dst_ip dst_port path in
@@ -322,7 +324,7 @@ module Unix = struct
             | Ok { Handshake.Response.accepted = false } ->
                 Log.info (fun f -> f "%s: request rejected" req);
                 Remote.close remote >>= fun () ->
-                Lwt.return (Error `ECONNREFUSED)
+                Lwt.return (Error (`Msg "ECONNREFUSED"))
             | Ok { Handshake.Response.accepted = true } ->
                 Log.info (fun f -> f "%s: forwarding connection" req);
                 Lwt.return (Ok { flow = remote })))
