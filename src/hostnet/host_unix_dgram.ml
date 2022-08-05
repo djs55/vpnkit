@@ -68,6 +68,7 @@ type flow = {
   fd: Unix.file_descr;
   send: int one_direction;
   recv: int one_direction;
+  mtu: int;
 }
 
 let of_bound_fd ?(mtu=1500) fd =
@@ -84,7 +85,7 @@ let of_bound_fd ?(mtu=1500) fd =
     Cstruct.blit_from_bytes recv_buffer 0 request.buf 0 n;
     n
   ) in
-  Lwt.return {fd; send; recv}
+  Lwt.return {fd; send; recv; mtu}
 
 let send flow buf =
   Lwt.catch
@@ -149,7 +150,15 @@ type write_error = error
 
 let pp_write_error = pp_error
 
-let read _t = Lwt.return @@ Ok (`Eof)
+open Lwt.Infix
+
+let read t =
+  let buf = Cstruct.create t.mtu in
+  recv t buf
+  >>= fun n ->
+  if n = 0
+  then Lwt.return @@ Ok `Eof
+  else Lwt.return @@ Ok (`Data (Cstruct.sub buf 0 n))
 
 let read_into _t _buf = Lwt.return @@ Ok (`Data ())
 
