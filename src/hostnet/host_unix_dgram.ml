@@ -180,3 +180,16 @@ let writev t bufs =
   write t buf
 
 let close t =  close t; Lwt.return_unit
+
+type server = {
+  fd: Unix.file_descr;
+}
+
+type address = string
+
+let bind ?description:_ _address =
+  Lwt.fail_with "bind"
+
+let listen _server _cb = ()
+
+let shutdown _server = Lwt.return_unit
