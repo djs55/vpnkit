@@ -77,11 +77,14 @@ module type UNIX_DGRAM = sig
 
   val close: flow -> unit Lwt.t
 
-  type server
-  (** A Unix domain socket which can receive datagram sockets *)
-
   type address = string
   (** Path of a listening Unix domain socket *)
+
+  val connect: address -> flow Lwt.t
+  (** Connect a SOCK_DRAM socket via fd-passing to a listening socket. *)
+
+  type server
+  (** A Unix domain socket which can receive datagram sockets *)
 
   val bind: ?description:string -> address -> server Lwt.t
   (** Bind a server to an address *)

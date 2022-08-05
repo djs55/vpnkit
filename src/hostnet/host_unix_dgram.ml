@@ -187,6 +187,9 @@ type server = {
 
 type address = string
 
+let connect _address =
+  Lwt.fail_with "connect"
+
 let bind ?description:_ _address =
   Lwt.fail_with "bind"
 

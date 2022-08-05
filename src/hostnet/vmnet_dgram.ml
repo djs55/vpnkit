@@ -338,6 +338,8 @@ module Make(C: Sig.UNIX_DGRAM) = struct
         Log.err (fun f -> f "%s: Server requires protocol version %s, we have %s" client_log_prefix (Int32.to_string x) (Int32.to_string Init.default.version));
         Lwt_result.fail (`Msg "Server does not support our version of the protocol")
 
+
+
   (* Use blocking I/O here so we can avoid Using Lwt_unix or Uwt. Ideally we
      would use a FLOW handle referencing a file/stream. *)
   let really_write fd str =
@@ -573,3 +575,37 @@ module Make(C: Sig.UNIX_DGRAM) = struct
   let reset_stats_counters t = Mirage_net.Stats.reset t.stats
 
 end
+
+let%test_unit "negotiate" =
+  if Sys.os_type <> "Win32" then begin
+    let module V = Make(Host_unix_dgram) in
+    Lwt_main.run begin
+      let address = "/tmp/vmnet_dgram.sock" in
+      let expected_uuid = Uuidm.v `V4 in
+      let expected_mtu = 1500 in
+      let expected_mac = Macaddr.of_string_exn "C0:FF:EE:C0:FF:EE" in
+      Host_unix_dgram.bind address
+      >>= fun server ->
+      Host_unix_dgram.listen server
+        (fun flow ->
+          let connect_client_fn _uuid _ip =
+            Lwt.return (Ok expected_mac) in
+          V.server_negotiate ~fd:flow ~connect_client_fn ~mtu:expected_mtu
+          >>= function
+          | Error (`Msg m) -> failwith m
+          | Ok (_uuid, _mac) ->
+            Lwt.return_unit
+        );
+      Host_unix_dgram.connect address
+      >>= fun flow ->
+      V.client_negotiate ~uuid:expected_uuid ~fd:flow ()
+      >>= function
+      | Error (`Msg m) -> failwith m
+      | Ok vif ->
+        if vif.mtu <> expected_mtu
+        then failwith (Printf.sprintf "vif.mtu (%d) <> expected_mtu (%d)" vif.mtu expected_mtu);
+        if Macaddr.compare vif.client_macaddr expected_mac <> 0
+        then failwith (Printf.sprintf "vif.client_macaddr (%s) <> expected_mac (%s)" (Macaddr.to_string vif.client_macaddr) (Macaddr.to_string expected_mac));
+        Lwt.return_unit
+    end
+  end
