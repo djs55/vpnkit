@@ -160,7 +160,13 @@ let read t =
   then Lwt.return @@ Ok `Eof
   else Lwt.return @@ Ok (`Data (Cstruct.sub buf 0 n))
 
-let read_into _t _buf = Lwt.return @@ Ok (`Data ())
+let read_into t buf =
+  (* FIXME: this API doesn't work with datagrams *)
+  recv t buf
+  >>= fun n ->
+  if n <> Cstruct.length buf
+  then failwith (Printf.sprintf "read_into buf len = %d, only read %d" (Cstruct.length buf) n)
+  else Lwt.return @@ Ok (`Data ())
 
 let write _t _buf = Lwt.return @@ Ok ()
 
