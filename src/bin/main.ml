@@ -429,6 +429,33 @@ let hvsock_addr_of_uri ~default_serviceid uri =
       if Uri.scheme uri = Some "hyperv-connect"
       then hvsock_connect_forever socket_url sockaddr callback
       else hvsock_listen sockaddr callback
+    | Some "dgram" ->
+      let module Slirp_stack =
+        Slirp.Make(Vmnet_dgram.Make(Host_unix_dgram))(Dns_policy)
+          (Mclock)(Mirage_random_stdlib)(Vnet)
+      in
+      begin Host_unix_dgram.bind socket_url
+      >>= fun server ->
+        Slirp_stack.create_static vnet_switch configuration
+        >>= fun stack_config ->
+        Host_unix_dgram.listen server (fun conn ->
+            Slirp_stack.connect stack_config conn >>= fun stack ->
+            Log.info (fun f -> f "TCP/IP stack connected");
+            List.iter (fun url ->
+              start_introspection url (Slirp_stack.filesystem stack);
+            ) introspection_urls;
+            List.iter (fun url ->
+              start_server "diagnostics" url @@ Slirp_stack.diagnostics stack
+            ) diagnostics_urls;
+            List.iter (fun url ->
+              start_server "pcap" url @@ Slirp_stack.pcap stack
+            ) pcap_urls;
+            Slirp_stack.after_disconnect stack >|= fun () ->
+            Log.info (fun f -> f "TCP/IP stack disconnected")
+          );
+        let wait_forever, _ = Lwt.task () in
+        wait_forever
+      end
     | Some "fd" | None ->
       let module Slirp_stack =
         Slirp.Make(Vmnet.Make(Host.Sockets.Stream.Unix))(Dns_policy)

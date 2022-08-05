@@ -190,6 +190,8 @@ type address = string
 let bind ?description:_ _address =
   Lwt.fail_with "bind"
 
-let listen _server _cb = ()
+let listen _server _cb =
+  (* FIXME: perform a handshake, send a useful debug string to thhe caller. *)
+  ()
 
 let shutdown _server = Lwt.return_unit
