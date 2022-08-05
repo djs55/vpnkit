@@ -168,8 +168,15 @@ let read_into t buf =
   then failwith (Printf.sprintf "read_into buf len = %d, only read %d" (Cstruct.length buf) n)
   else Lwt.return @@ Ok (`Data ())
 
-let write _t _buf = Lwt.return @@ Ok ()
+let write t buf =
+  send t buf
+  >>= fun n ->
+  if n <> Cstruct.length buf
+  then failwith (Printf.sprintf "send buf len = %d, only sent %d" (Cstruct.length buf) n)
+  else Lwt.return @@ Ok ()
 
-let writev _t _bufs = Lwt.return @@ Ok ()
+let writev t bufs =
+  let buf = Cstruct.concat bufs in
+  write t buf
 
 let close t =  close t; Lwt.return_unit
