@@ -187,14 +187,110 @@ type server = {
 
 type address = string
 
-let connect _address =
-  Lwt.fail_with "connect"
+let magic = "VMNET"
+let error_message = "This socket receives SOCK_DGRAM file descriptors for sending and receiving ethernet frames.\nIt cannot be used directly.\n"
+let success_message = "OK"
 
-let bind ?description:_ _address =
-  Lwt.fail_with "bind"
+let connect address =
+  let fd_t, fd_u = Lwt.task () in
+  let _ : Thread.t = Thread.create (fun () ->
+    let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+    Unix.connect s (Unix.ADDR_UNIX address);
+    let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
+    let _ : int = Fd_send_recv.send_fd s (Bytes.of_string magic) 0 (String.length magic) [] a in
+    let buf = Bytes.create (String.length error_message) in
+    let n = Unix.read s buf 0 (Bytes.length buf) in
+    Unix.close s;
+    let response = Bytes.sub buf 0 n |> Bytes.to_string in
+    if response <> success_message
+    then failwith ("Host_unix_dgram.connect: " ^ response);
+    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u b)
+  ) () in
+  let open Lwt.Infix in
+  fd_t >>= fun fd ->
+  of_bound_fd fd
 
-let listen _server _cb =
-  (* FIXME: perform a handshake, send a useful debug string to thhe caller. *)
+let bind ?description:_ address =
+  let fd_t, fd_u = Lwt.task () in
+  let _ : Thread.t = Thread.create (fun () ->
+    let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+    Unix.bind s (Unix.ADDR_UNIX address);
+    Unix.listen s 5;
+    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u s)
+  ) () in
+  let open Lwt.Infix in
+  fd_t >>= fun fd ->
+  Lwt.return { fd }
+
+let listen server cb =
+  let _ : Thread.t = Thread.create (fun () ->
+    while true do
+      let fd, _ = Unix.accept server.fd in
+      let result = Bytes.make 8 '\000' in
+      let n, _, received_fd = Fd_send_recv.recv_fd fd result 0 (Bytes.length result) [] in
+      let actual_magic = Bytes.sub result 0 n |> Bytes.to_string in
+      if actual_magic <> magic then begin
+        (* Probably someone accidentally connected to this socket to see what it was. *)
+        let m = Bytes.of_string error_message in
+        let _ : int = Unix.write fd m 0 (Bytes.length m) in
+        Unix.close fd;
+      end else begin
+        let m = Bytes.of_string success_message in
+        let _ : int = Unix.write fd m 0 (Bytes.length m) in
+        Unix.close fd;
+        Luv_lwt.in_lwt_async (fun () ->
+          Lwt.async (fun () ->
+            of_bound_fd received_fd
+            >>= fun flow ->
+            cb flow
+          )
+        )
+      end
+    done
+  ) () in
   ()
 
-let shutdown _server = Lwt.return_unit
+let shutdown server =
+  let done_t, done_u = Lwt.task () in
+  let _ : Thread.t = Thread.create (fun () ->
+    Unix.close server.fd;
+    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later done_u ())
+  ) () in
+  done_t
+
+let%test_unit "host_unix_dgram" =
+  if Sys.os_type <> "Win32" then begin
+    Lwt_main.run begin
+      let address = "/tmp/host_unix_dgram.sock" in
+      bind address
+      >>= fun server ->
+      listen server
+        (fun flow ->
+          let buf = Cstruct.create 1024 in
+          recv flow buf
+          >>= fun n ->
+          send flow (Cstruct.sub buf 0 n)
+          >>= fun m ->
+          if n <> m then failwith (Printf.sprintf "n (%d) <> m (%d)" n m);
+          Lwt.return_unit
+        );
+      connect address
+      >>= fun flow ->
+      let message = "hello" in
+      let buf = Cstruct.create (String.length message) in
+      Cstruct.blit_from_string message 0 buf 0 (String.length message);
+      send flow buf
+      >>= fun n ->
+      if n <> (String.length message)
+      then failwith (Printf.sprintf "n (%d) <> String.length message (%d)" n (String.length message));
+      let buf = Cstruct.create (String.length message) in
+      recv flow buf
+      >>= fun n ->
+      if n <> (String.length message)
+      then failwith (Printf.sprintf "n (%d) <> String.length message (%d)" n (String.length message));
+      let response = Cstruct.to_string buf in
+      if message <> response
+      then failwith (Printf.sprintf "message (%s) <> response (%s)" message response);
+      close flow
+    end
+  end
