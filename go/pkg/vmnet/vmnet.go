@@ -67,14 +67,14 @@ func defaultInitMessage() *InitMessage {
 }
 
 // Write marshals an init message to a connection
-func (m *InitMessage) Write(c net.Conn) error {
-	if err := binary.Write(c, binary.LittleEndian, m.magic); err != nil {
+func (m *InitMessage) Write(w io.Writer) error {
+	if err := binary.Write(w, binary.LittleEndian, m.magic); err != nil {
 		return err
 	}
-	if err := binary.Write(c, binary.LittleEndian, m.version); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, m.version); err != nil {
 		return err
 	}
-	if err := binary.Write(c, binary.LittleEndian, m.commit); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, m.commit); err != nil {
 		return err
 	}
 	return nil
@@ -121,19 +121,19 @@ func NewEthernet(uuid uuid.UUID, ip net.IP) *Ethernet {
 }
 
 // Write marshals an Ethernet message
-func (m *Ethernet) Write(c net.Conn) error {
+func (m *Ethernet) Write(w io.Writer) error {
 	ty := uint8(1)
 	if m.ip != nil {
 		ty = uint8(8)
 	}
-	if err := binary.Write(c, binary.LittleEndian, ty); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, ty); err != nil {
 		return err
 	}
 	u, err := m.uuid.MarshalText()
 	if err != nil {
 		return err
 	}
-	if err := binary.Write(c, binary.LittleEndian, u); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, u); err != nil {
 		return err
 	}
 	ip := uint32(0)
@@ -141,7 +141,7 @@ func (m *Ethernet) Write(c net.Conn) error {
 		ip = binary.BigEndian.Uint32(m.ip.To4())
 	}
 	// The protocol uses little endian, not network endian
-	if err := binary.Write(c, binary.LittleEndian, ip); err != nil {
+	if err := binary.Write(w, binary.LittleEndian, ip); err != nil {
 		return err
 	}
 	return nil
