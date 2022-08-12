@@ -213,14 +213,19 @@ let connect address =
 let bind ?description:_ address =
   let fd_t, fd_u = Lwt.task () in
   let _ : Thread.t = Thread.create (fun () ->
-    let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Unix.bind s (Unix.ADDR_UNIX address);
-    Unix.listen s 5;
-    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u s)
+    let result =
+      try
+        let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+        Unix.bind s (Unix.ADDR_UNIX address);
+        Unix.listen s 5;
+        Ok s
+      with e -> Error e in
+      Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u result)
   ) () in
   let open Lwt.Infix in
-  fd_t >>= fun fd ->
-  Lwt.return { fd }
+  fd_t >>= function
+  | Ok fd -> Lwt.return { fd }
+  | Error e -> Lwt.fail e
 
 let listen server cb =
   let _ : Thread.t = Thread.create (fun () ->
