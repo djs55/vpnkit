@@ -275,6 +275,7 @@ let%test_unit "host_unix_dgram" =
   if Sys.os_type <> "Win32" then begin
     Lwt_main.run begin
       let address = "/tmp/host_unix_dgram.sock" in
+      (try Unix.unlink address with Unix.Unix_error(Unix.ENOENT, _, _) -> ());
       bind address
       >>= fun server ->
       listen server
