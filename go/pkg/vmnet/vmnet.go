@@ -16,16 +16,20 @@ import (
 // Vmnet describes a "vmnet protocol" connection which allows ethernet frames to be
 // sent to and received by vpnkit.
 type Vmnet struct {
-	conn          net.Conn
+	conn          *net.UnixConn
 	remoteVersion *InitMessage
 }
 
 // New constructs an instance of Vmnet.
 func New(ctx context.Context, path string) (*Vmnet, error) {
 	d := &net.Dialer{}
-	conn, err := d.DialContext(ctx, "unix", path)
+	c, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
 		return nil, err
+	}
+	conn, ok := c.(*net.UnixConn)
+	if !ok {
+		return nil, errors.New("not a *net.UnixConn")
 	}
 	var remoteVersion *InitMessage
 	vmnet := &Vmnet{conn, remoteVersion}
