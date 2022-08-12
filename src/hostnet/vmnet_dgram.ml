@@ -581,6 +581,7 @@ let%test_unit "negotiate" =
     let module V = Make(Host_unix_dgram) in
     Lwt_main.run begin
       let address = "/tmp/vmnet_dgram.sock" in
+      (try Unix.unlink address with Unix.Unix_error(Unix.ENOENT, _, _) -> ());
       let expected_uuid = Uuidm.v `V4 in
       let expected_mtu = 1500 in
       let expected_mac = Macaddr.of_string_exn "C0:FF:EE:C0:FF:EE" in
