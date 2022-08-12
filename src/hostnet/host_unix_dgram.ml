@@ -197,21 +197,26 @@ let success_message = "OK"
 let connect address =
   let fd_t, fd_u = Lwt.task () in
   let _ : Thread.t = Thread.create (fun () ->
-    let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Unix.connect s (Unix.ADDR_UNIX address);
-    let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
-    let _ : int = Fd_send_recv.send_fd s (Bytes.of_string magic) 0 (String.length magic) [] a in
-    let buf = Bytes.create (String.length error_message) in
-    let n = Unix.read s buf 0 (Bytes.length buf) in
-    Unix.close s;
-    let response = Bytes.sub buf 0 n |> Bytes.to_string in
-    if response <> success_message
-    then failwith ("Host_unix_dgram.connect: " ^ response);
-    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u b)
+    let result =
+      try
+        let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+        Unix.connect s (Unix.ADDR_UNIX address);
+        let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
+        let _ : int = Fd_send_recv.send_fd s (Bytes.of_string magic) 0 (String.length magic) [] a in
+        let buf = Bytes.create (String.length error_message) in
+        let n = Unix.read s buf 0 (Bytes.length buf) in
+        Unix.close s;
+        let response = Bytes.sub buf 0 n |> Bytes.to_string in
+        if response <> success_message
+        then failwith ("Host_unix_dgram.connect: " ^ response);
+        Ok b
+      with e -> Error e in
+    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u result)
   ) () in
   let open Lwt.Infix in
-  fd_t >>= fun fd ->
-  of_bound_fd fd
+  fd_t >>= function
+  | Ok fd -> of_bound_fd fd
+  | Error e -> Lwt.fail e
 
 let bind ?description:_ address =
   let fd_t, fd_u = Lwt.task () in
