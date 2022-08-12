@@ -434,7 +434,9 @@ let hvsock_addr_of_uri ~default_serviceid uri =
         Slirp.Make(Vmnet_dgram.Make(Host_unix_dgram))(Dns_policy)
           (Mclock)(Mirage_random_stdlib)(Vnet)
       in
-      begin Host_unix_dgram.bind socket_url
+      let path = Uri.path uri in
+      (try Unix.unlink path with Unix.Unix_error(Unix.ENOENT, _, _) -> ());
+      begin Host_unix_dgram.bind path
       >>= fun server ->
         Slirp_stack.create_static vnet_switch configuration
         >>= fun stack_config ->
