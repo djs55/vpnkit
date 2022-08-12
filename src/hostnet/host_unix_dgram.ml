@@ -41,8 +41,11 @@ let worker f d =
       | None -> ()
       | Some r ->
         d.request <- None;
-        let result = f r in
-        Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later r.done_u result)
+        try
+          let result = f r in
+          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later r.done_u result)
+        with e ->
+          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_exn r.done_u e)
       end;
       if not d.closed then loop () in
     loop ()
