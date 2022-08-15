@@ -3,6 +3,7 @@ package vmnet
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"syscall"
@@ -14,7 +15,8 @@ import (
 // Vmnet describes a "vmnet protocol" connection which allows ethernet frames to be
 // sent to and received by vpnkit.
 type Vmnet struct {
-	conn          *net.UnixConn
+	conn          io.ReadWriteCloser
+	packets       packetReadWriter
 	remoteVersion *InitMessage
 }
 
@@ -25,17 +27,11 @@ func New(ctx context.Context, path string) (*Vmnet, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, ok := c.(*net.UnixConn)
-	if !ok {
-		return nil, errors.New("not a *net.UnixConn")
-	}
-	var remoteVersion *InitMessage
-	vmnet := &Vmnet{conn, remoteVersion}
-	remoteVersion, err = negotiate(conn)
+	remoteVersion, err := negotiate(c)
 	if err != nil {
 		return nil, err
 	}
-	vmnet.remoteVersion = remoteVersion
+	vmnet := &Vmnet{c, ethernetStream{c}, remoteVersion}
 	return vmnet, err
 }
 
@@ -107,13 +103,9 @@ func (v *Vmnet) Close() error {
 	return v.conn.Close()
 }
 
-func (v *Vmnet) recvInitMessage() (*InitMessage, error) {
-	return nil, errors.New("recvInitMessage not implemented")
-}
-
 // ConnectVif returns a connected network interface with the given uuid.
 func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
-	return connectVif(v.conn, uuid)
+	return connectVif(v.conn, v.packets, uuid)
 }
 
 // ConnectVifIP returns a connected network interface with the given uuid

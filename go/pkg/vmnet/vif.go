@@ -16,19 +16,19 @@ type Vif struct {
 	IP            net.IP
 }
 
-func connectVif(rw io.ReadWriter, uuid uuid.UUID) (*Vif, error) {
+func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
 	e := NewEthernetRequest(uuid, nil)
-	if err := e.Write(rw); err != nil {
+	if err := e.Write(conn); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(rw); err != nil {
+	if err := readEthernetResponse(conn); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(rw)
+	vif, err := readVif(conn)
 	if err != nil {
 		return nil, err
 	}
-	IP, err := dhcpRequest(rw, vif.ClientMAC)
+	IP, err := dhcpRequest(packet, vif.ClientMAC)
 	if err != nil {
 		return nil, err
 	}
@@ -38,15 +38,15 @@ func connectVif(rw io.ReadWriter, uuid uuid.UUID) (*Vif, error) {
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
-func connectVifIP(rw io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
+func connectVifIP(conn io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	e := NewEthernetRequest(uuid, IP)
-	if err := e.Write(rw); err != nil {
+	if err := e.Write(conn); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(rw); err != nil {
+	if err := readEthernetResponse(conn); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(rw)
+	vif, err := readVif(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -54,21 +54,21 @@ func connectVifIP(rw io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	return vif, err
 }
 
-func readVif(rw io.ReadWriter) (*Vif, error) {
+func readVif(conn io.ReadWriter) (*Vif, error) {
 	var MTU, MaxPacketSize uint16
 
-	if err := binary.Read(rw, binary.LittleEndian, &MTU); err != nil {
+	if err := binary.Read(conn, binary.LittleEndian, &MTU); err != nil {
 		return nil, err
 	}
-	if err := binary.Read(rw, binary.LittleEndian, &MaxPacketSize); err != nil {
+	if err := binary.Read(conn, binary.LittleEndian, &MaxPacketSize); err != nil {
 		return nil, err
 	}
 	var mac [6]byte
-	if err := binary.Read(rw, binary.LittleEndian, &mac); err != nil {
+	if err := binary.Read(conn, binary.LittleEndian, &mac); err != nil {
 		return nil, err
 	}
 	padding := make([]byte, 1+256-6-2-2)
-	if err := binary.Read(rw, binary.LittleEndian, &padding); err != nil {
+	if err := binary.Read(conn, binary.LittleEndian, &padding); err != nil {
 		return nil, err
 	}
 	ClientMAC := mac[:]

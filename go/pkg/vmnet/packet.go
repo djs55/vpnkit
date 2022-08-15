@@ -15,6 +15,8 @@ import (
 
 // Send and receive ethernet frames
 
+type packetReadWriter = io.ReadWriter
+
 // ethernetDatagram sends and receives ethernet frames as datagrams.
 type ethernetDatagram struct {
 	fd int
@@ -33,14 +35,14 @@ func (e ethernetDatagram) Write(packet []byte) (int, error) {
 	return len(packet), nil
 }
 
-var _ io.ReadWriter = ethernetDatagram{}
+var _ packetReadWriter = ethernetDatagram{}
 
 // ethernetStream multiplexes ethernet frames onto a stream.
 type ethernetStream struct {
-	rw io.ReadWriter
+	rw io.ReadWriteCloser
 }
 
-var _ io.ReadWriter = ethernetStream{}
+var _ packetReadWriter = ethernetStream{}
 
 func (e ethernetStream) Read(buf []byte) (int, error) {
 	var len uint16
