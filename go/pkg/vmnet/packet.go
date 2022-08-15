@@ -35,6 +35,10 @@ func (e ethernetDatagram) Write(packet []byte) (int, error) {
 	return len(packet), nil
 }
 
+func (e ethernetDatagram) Close() error {
+	return syscall.Close(e.fd)
+}
+
 var _ packetReadWriter = ethernetDatagram{}
 
 // ethernetStream multiplexes ethernet frames onto a stream.

@@ -15,7 +15,8 @@ import (
 // Vmnet describes a "vmnet protocol" connection which allows ethernet frames to be
 // sent to and received by vpnkit.
 type Vmnet struct {
-	conn          io.ReadWriteCloser
+	closer        io.Closer
+	raw           io.ReadWriter
 	packets       packetReadWriter
 	remoteVersion *InitMessage
 }
@@ -31,7 +32,7 @@ func New(ctx context.Context, path string) (*Vmnet, error) {
 	if err != nil {
 		return nil, err
 	}
-	vmnet := &Vmnet{c, ethernetStream{c}, remoteVersion}
+	vmnet := &Vmnet{c, c, ethernetStream{c}, remoteVersion}
 	return vmnet, err
 }
 
@@ -40,13 +41,13 @@ const (
 	fdSendSuccess = "OK"
 )
 
-// ConnectFileDescriptor returns a SOCK_DGRAM file descriptor where ethernet frames can be
+// NewFileDescriptor returns a SOCK_DGRAM file descriptor where ethernet frames can be
 // sent to vpnkit via send/recv.
-func ConnectFileDescriptor(ctx context.Context, path string) (int, error) {
+func NewFileDescriptor(ctx context.Context, path string) (*Vmnet, error) {
 	// Create a socketpair
 	fds, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_DGRAM, 0)
 	if err != nil {
-		return -1, errors.Wrap(err, "creating SOCK_DGRAM socketpair for ethernet")
+		return nil, errors.Wrap(err, "creating SOCK_DGRAM socketpair for ethernet")
 	}
 	defer func() {
 		for _, fd := range fds {
@@ -57,32 +58,37 @@ func ConnectFileDescriptor(ctx context.Context, path string) (int, error) {
 	for _, fd := range fds {
 		maxLength := 1048576
 		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, maxLength); err != nil {
-			return -1, errors.Wrap(err, "setting SO_RCVBUF")
+			return nil, errors.Wrap(err, "setting SO_RCVBUF")
 		}
 		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, maxLength); err != nil {
-			return -1, errors.Wrap(err, "setting SO_SNDBUF")
+			return nil, errors.Wrap(err, "setting SO_SNDBUF")
 		}
 	}
 	// Dial over SOCK_STREAM, passing fd and magic
 	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
-		return -1, errors.Wrap(err, "dialing "+path)
+		return nil, errors.Wrap(err, "dialing "+path)
 	}
 	defer c.Close()
 	if err := sendFileDescriptor(c, []byte(fdSendMagic), fds[0]); err != nil {
-		return -1, errors.Wrap(err, "sending file descriptor")
+		return nil, errors.Wrap(err, "sending file descriptor")
 	}
 	// Receive success
 	response, err := ioutil.ReadAll(c)
 	if err != nil {
-		return -1, errors.Wrap(err, "reading response from file descriptor send")
+		return nil, errors.Wrap(err, "reading response from file descriptor send")
 	}
 	if string(response) != fdSendSuccess {
-		return -1, fmt.Errorf("sending file descriptor: %s", string(response))
+		return nil, fmt.Errorf("sending file descriptor: %s", string(response))
 	}
 	// We can now negotiate over the socketpair
-
-	return fds[1], nil
+	packet := ethernetDatagram{fds[1]}
+	remoteVersion, err := negotiate(packet)
+	if err != nil {
+		return nil, err
+	}
+	vmnet := &Vmnet{packet, packet, packet, remoteVersion}
+	return vmnet, nil
 }
 
 func sendFileDescriptor(c *net.UnixConn, msg []byte, fd int) error {
@@ -100,16 +106,16 @@ func sendFileDescriptor(c *net.UnixConn, msg []byte, fd int) error {
 
 // Close closes the connection.
 func (v *Vmnet) Close() error {
-	return v.conn.Close()
+	return v.closer.Close()
 }
 
 // ConnectVif returns a connected network interface with the given uuid.
 func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
-	return connectVif(v.conn, v.packets, uuid)
+	return connectVif(v.raw, v.packets, uuid)
 }
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	return connectVifIP(v.conn, uuid, IP)
+	return connectVifIP(v.raw, uuid, IP)
 }
