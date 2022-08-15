@@ -3,7 +3,6 @@ package vmnet
 import (
 	"context"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
 	"syscall"
@@ -121,42 +120,4 @@ func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	return connectVifIP(v.conn, uuid, IP)
-}
-
-func connectVif(rw io.ReadWriter, uuid uuid.UUID) (*Vif, error) {
-	e := NewEthernetRequest(uuid, nil)
-	if err := e.Write(rw); err != nil {
-		return nil, err
-	}
-	if err := readEthernetResponse(rw); err != nil {
-		return nil, err
-	}
-	vif, err := readVif(rw)
-	if err != nil {
-		return nil, err
-	}
-	IP, err := dhcpRequest(rw, vif.ClientMAC)
-	if err != nil {
-		return nil, err
-	}
-	vif.IP = IP
-	return vif, err
-}
-
-// ConnectVifIP returns a connected network interface with the given uuid
-// and IP. If the IP is already in use then return an error.
-func connectVifIP(rw io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	e := NewEthernetRequest(uuid, IP)
-	if err := e.Write(rw); err != nil {
-		return nil, err
-	}
-	if err := readEthernetResponse(rw); err != nil {
-		return nil, err
-	}
-	vif, err := readVif(rw)
-	if err != nil {
-		return nil, err
-	}
-	vif.IP = IP
-	return vif, err
 }

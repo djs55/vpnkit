@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+
+	"github.com/google/uuid"
 )
 
 // Vif represents an Ethernet device
@@ -12,6 +14,44 @@ type Vif struct {
 	MaxPacketSize uint16
 	ClientMAC     net.HardwareAddr
 	IP            net.IP
+}
+
+func connectVif(rw io.ReadWriter, uuid uuid.UUID) (*Vif, error) {
+	e := NewEthernetRequest(uuid, nil)
+	if err := e.Write(rw); err != nil {
+		return nil, err
+	}
+	if err := readEthernetResponse(rw); err != nil {
+		return nil, err
+	}
+	vif, err := readVif(rw)
+	if err != nil {
+		return nil, err
+	}
+	IP, err := dhcpRequest(rw, vif.ClientMAC)
+	if err != nil {
+		return nil, err
+	}
+	vif.IP = IP
+	return vif, err
+}
+
+// ConnectVifIP returns a connected network interface with the given uuid
+// and IP. If the IP is already in use then return an error.
+func connectVifIP(rw io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
+	e := NewEthernetRequest(uuid, IP)
+	if err := e.Write(rw); err != nil {
+		return nil, err
+	}
+	if err := readEthernetResponse(rw); err != nil {
+		return nil, err
+	}
+	vif, err := readVif(rw)
+	if err != nil {
+		return nil, err
+	}
+	vif.IP = IP
+	return vif, err
 }
 
 func readVif(rw io.ReadWriter) (*Vif, error) {
