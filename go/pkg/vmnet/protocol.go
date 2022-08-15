@@ -14,6 +14,14 @@ import (
 
 // vpnkit internal protocol requests and responses
 
+func negotiate(rw io.ReadWriter) (*InitMessage, error) {
+	m := defaultInitMessage()
+	if err := m.Write(rw); err != nil {
+		return nil, err
+	}
+	return readInitMessage(rw)
+}
+
 // InitMessage is used for the initial version exchange
 type InitMessage struct {
 	magic   [5]byte

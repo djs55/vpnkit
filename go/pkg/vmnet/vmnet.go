@@ -32,10 +32,11 @@ func New(ctx context.Context, path string) (*Vmnet, error) {
 	}
 	var remoteVersion *InitMessage
 	vmnet := &Vmnet{conn, remoteVersion}
-	err = vmnet.negotiate()
+	remoteVersion, err = negotiate(conn)
 	if err != nil {
 		return nil, err
 	}
+	vmnet.remoteVersion = remoteVersion
 	return vmnet, err
 }
 
@@ -109,19 +110,6 @@ func (v *Vmnet) Close() error {
 
 func (v *Vmnet) recvInitMessage() (*InitMessage, error) {
 	return nil, errors.New("recvInitMessage not implemented")
-}
-
-func (v *Vmnet) negotiate() error {
-	m := defaultInitMessage()
-	if err := m.Write(v.conn); err != nil {
-		return err
-	}
-	remoteVersion, err := readInitMessage(v.conn)
-	if err != nil {
-		return err
-	}
-	v.remoteVersion = remoteVersion
-	return nil
 }
 
 // ConnectVif returns a connected network interface with the given uuid.
