@@ -1,6 +1,7 @@
 package vmnet
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -20,6 +21,8 @@ type InitMessage struct {
 	commit  [40]byte
 }
 
+const sizeof_InitMessage = 5 + 4 + 40
+
 // String returns a human-readable string.
 func (m *InitMessage) String() string {
 	return fmt.Sprintf("magic=%v version=%d commit=%v", m.magic, m.version, m.commit)
@@ -36,29 +39,36 @@ func defaultInitMessage() *InitMessage {
 
 // Write marshals an init message to a connection
 func (m *InitMessage) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.LittleEndian, m.magic); err != nil {
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, binary.LittleEndian, m.magic); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.LittleEndian, m.version); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, m.version); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.LittleEndian, m.commit); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, m.commit); err != nil {
 		return err
 	}
-	return nil
+	_, err := w.Write(buf.Bytes())
+	return err
 }
 
 // readInitMessage unmarshals an init message from a connection
 func readInitMessage(r io.Reader) (*InitMessage, error) {
 	m := defaultInitMessage()
-	if err := binary.Read(r, binary.LittleEndian, &m.magic); err != nil {
+	bs := make([]byte, sizeof_InitMessage)
+	if _, err := r.Read(bs); err != nil {
 		return nil, err
 	}
-	if err := binary.Read(r, binary.LittleEndian, &m.version); err != nil {
+	br := bytes.NewReader(bs)
+	if err := binary.Read(br, binary.LittleEndian, &m.magic); err != nil {
+		return nil, err
+	}
+	if err := binary.Read(br, binary.LittleEndian, &m.version); err != nil {
 		return nil, err
 	}
 	log.Printf("version = %d", m.version)
-	if err := binary.Read(r, binary.LittleEndian, &m.commit); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &m.commit); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -78,18 +88,19 @@ func NewEthernetRequest(uuid uuid.UUID, ip net.IP) *EthernetRequest {
 
 // Write marshals an EthernetRequest message
 func (m *EthernetRequest) Write(w io.Writer) error {
+	var buf bytes.Buffer
 	ty := uint8(1)
 	if m.ip != nil {
 		ty = uint8(8)
 	}
-	if err := binary.Write(w, binary.LittleEndian, ty); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, ty); err != nil {
 		return err
 	}
 	u, err := m.uuid.MarshalText()
 	if err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.LittleEndian, u); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, u); err != nil {
 		return err
 	}
 	ip := uint32(0)
@@ -97,15 +108,24 @@ func (m *EthernetRequest) Write(w io.Writer) error {
 		ip = binary.BigEndian.Uint32(m.ip.To4())
 	}
 	// The protocol uses little endian, not network endian
-	if err := binary.Write(w, binary.LittleEndian, ip); err != nil {
+	if err := binary.Write(&buf, binary.LittleEndian, ip); err != nil {
 		return err
 	}
-	return nil
+	_, err = w.Write(buf.Bytes())
+	return err
 }
 
+const max_ethernetResponse = 1500
+
 func readEthernetResponse(r io.Reader) error {
+	bs := make([]byte, max_ethernetResponse)
+	_, err := r.Read(bs)
+	if err != nil {
+		return err
+	}
+	br := bytes.NewReader(bs)
 	var responseType uint8
-	if err := binary.Read(r, binary.LittleEndian, &responseType); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &responseType); err != nil {
 		return err
 	}
 	switch responseType {
@@ -113,11 +133,11 @@ func readEthernetResponse(r io.Reader) error {
 		return nil
 	default:
 		var len uint8
-		if err := binary.Read(r, binary.LittleEndian, &len); err != nil {
+		if err := binary.Read(br, binary.LittleEndian, &len); err != nil {
 			return err
 		}
 		message := make([]byte, len)
-		if err := binary.Read(r, binary.LittleEndian, &message); err != nil {
+		if err := binary.Read(br, binary.LittleEndian, &message); err != nil {
 			return err
 		}
 

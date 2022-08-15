@@ -1,12 +1,13 @@
 package vmnet
 
 import (
+	"io"
 	"net"
 	"time"
 )
 
 // dhcp queries the IP by DHCP
-func dhcpRequest(e ethernetReadWriter, clientMAC net.HardwareAddr) (net.IP, error) {
+func dhcpRequest(e io.ReadWriter, clientMAC net.HardwareAddr) (net.IP, error) {
 	broadcastMAC := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	broadcastIP := []byte{0xff, 0xff, 0xff, 0xff}
 	unknownIP := []byte{0, 0, 0, 0}
@@ -22,18 +23,20 @@ func dhcpRequest(e ethernetReadWriter, clientMAC net.HardwareAddr) (net.IP, erro
 	finished := false
 	go func() {
 		for !finished {
-			if err := e.Write(ethernet.Bytes()); err != nil {
+			if _, err := e.Write(ethernet.Bytes()); err != nil {
 				panic(err)
 			}
 			time.Sleep(time.Second)
 		}
 	}()
 
+	buf := make([]byte, 1500)
 	for {
-		response, err := e.Read()
+		n, err := e.Read(buf)
 		if err != nil {
 			return nil, err
 		}
+		response := buf[0:n]
 		ethernet, err = ParseEthernetFrame(response)
 		if err != nil {
 			continue

@@ -15,59 +15,51 @@ import (
 
 // Send and receive ethernet frames
 
-type ethernetReadWriter interface {
-	Read() ([]byte, error)
-	Write(packet []byte) error
-}
-
 // ethernetDatagram sends and receives ethernet frames as datagrams.
 type ethernetDatagram struct {
-	fd  int
-	mtu int
+	fd int
 }
 
-func (e ethernetDatagram) Read() ([]byte, error) {
-	buf := make([]byte, e.mtu)
+func (e ethernetDatagram) Read(buf []byte) (int, error) {
 	num, _, err := syscall.Recvfrom(e.fd, buf, 0)
-	return buf[0:num], err
+	return num, err
 }
 
-func (e ethernetDatagram) Write(packet []byte) error {
+func (e ethernetDatagram) Write(packet []byte) (int, error) {
 	result, err := C.send(C.int(e.fd), C.CBytes(packet), C.size_t(len(packet)), 0)
 	if result == -1 {
-		return err
+		return 0, err
 	}
-	return nil
+	return len(packet), nil
 }
 
-var _ ethernetReadWriter = ethernetDatagram{}
+var _ io.ReadWriter = ethernetDatagram{}
 
 // ethernetStream multiplexes ethernet frames onto a stream.
 type ethernetStream struct {
 	rw io.ReadWriter
 }
 
-var _ ethernetReadWriter = ethernetStream{}
+var _ io.ReadWriter = ethernetStream{}
 
-func (e ethernetStream) Read() ([]byte, error) {
+func (e ethernetStream) Read(buf []byte) (int, error) {
 	var len uint16
 	if err := binary.Read(e.rw, binary.LittleEndian, &len); err != nil {
-		return nil, err
+		return 0, err
 	}
-	packet := make([]byte, len)
-	if err := binary.Read(e.rw, binary.LittleEndian, &packet); err != nil {
-		return nil, err
+	if err := binary.Read(e.rw, binary.LittleEndian, &buf); err != nil {
+		return 0, err
 	}
-	return packet, nil
+	return int(len), nil
 }
 
-func (e ethernetStream) Write(packet []byte) error {
+func (e ethernetStream) Write(packet []byte) (int, error) {
 	len := uint16(len(packet))
 	if err := binary.Write(e.rw, binary.LittleEndian, len); err != nil {
-		return err
+		return 0, err
 	}
 	if err := binary.Write(e.rw, binary.LittleEndian, packet); err != nil {
-		return err
+		return 0, err
 	}
-	return nil
+	return int(len), nil
 }

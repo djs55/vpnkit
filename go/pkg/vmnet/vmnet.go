@@ -147,7 +147,7 @@ func connectVif(rw io.ReadWriter, uuid uuid.UUID) (*Vif, error) {
 	if err != nil {
 		return nil, err
 	}
-	IP, err := vif.dhcp()
+	IP, err := dhcpRequest(rw, vif.ClientMAC)
 	if err != nil {
 		return nil, err
 	}
