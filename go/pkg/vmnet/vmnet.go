@@ -53,7 +53,7 @@ const (
 // connectDatagram uses the new SOCK_DGRAM protocol.
 func connectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 	// Create a socketpair
-	fds, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_DGRAM, 0)
+	fds, err := socketpair()
 	if err != nil {
 		return nil, errors.Wrap(err, "creating SOCK_DGRAM socketpair for ethernet")
 	}
@@ -66,15 +66,6 @@ func connectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 		}
 	}()
 
-	for _, fd := range fds {
-		maxLength := 1048576
-		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, maxLength); err != nil {
-			return nil, errors.Wrap(err, "setting SO_RCVBUF")
-		}
-		if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, maxLength); err != nil {
-			return nil, errors.Wrap(err, "setting SO_SNDBUF")
-		}
-	}
 	// Dial over SOCK_STREAM, passing fd and magic
 	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {

@@ -4,8 +4,10 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/moby/vpnkit/go/pkg/vpnkit/log"
 )
 
 // Vif represents an Ethernet device
@@ -15,6 +17,46 @@ type Vif struct {
 	ClientMAC     net.HardwareAddr
 	IP            net.IP
 	Packet        packetReadWriter
+}
+
+// Fd returns a SOCK_DGRAM which can send and receive raw ethernet frames.
+func (v *Vif) Fd() (int, error) {
+	d, ok := v.Packet.(ethernetDatagram)
+	if ok {
+		// return the raw datagram socket
+		return d.fd, nil
+	}
+	// FIXME: make this global in vmnet for easier closing? and better mux/demux
+	// create a socketpair and feed one end into the packetReadWriter
+	fds, err := socketpair()
+	if err != nil {
+		return -1, err
+	}
+	proxy := ethernetDatagram{fds[1]}
+
+	go v.proxy(proxy, v.Packet)
+	go v.proxy(v.Packet, proxy)
+	return fds[0], nil
+}
+
+func (v *Vif) proxy(from, to packetReadWriter) {
+	buf := make([]byte, v.MaxPacketSize)
+	for {
+		n, err := from.Read(buf)
+		if err != nil {
+			log.Errorf("from.Read: %v", err)
+			return
+		}
+		packet := buf[0:n]
+		for {
+			_, err := to.Write(packet)
+			if err == nil {
+				break
+			}
+			log.Errorf("to.write retrying packet of length %d: %v", len(packet), err)
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
