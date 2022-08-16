@@ -82,9 +82,6 @@ func connectVif(fixedSize, ethernet packetReadWriter, uuid uuid.UUID) (*Vif, err
 	if err := e.Write(fixedSize); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(fixedSize); err != nil {
-		return nil, err
-	}
 	vif, err := readVif(fixedSize)
 	if err != nil {
 		return nil, err
@@ -107,9 +104,6 @@ func connectVifIP(fixedSize, ethernet packetReadWriter, uuid uuid.UUID, IP net.I
 	if err := e.Write(fixedSize); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(fixedSize); err != nil {
-		return nil, err
-	}
 	vif, err := readVif(fixedSize)
 	if err != nil {
 		return nil, err
@@ -122,11 +116,28 @@ func connectVifIP(fixedSize, ethernet packetReadWriter, uuid uuid.UUID, IP net.I
 }
 
 func readVif(fixedSize packetReadWriter) (*Vif, error) {
-	buf := make([]byte, 256+1)
+	// https://github.com/moby/vpnkit/blob/6039eac025e0740e530f2ff11f57d6d990d1c4a1/src/hostnet/vmnet.ml#L160
+	buf := make([]byte, 1+1+256)
 	if err := binary.Read(fixedSize, binary.LittleEndian, &buf); err != nil {
 		return nil, errors.Wrap(err, "reading VIF metadata")
 	}
 	br := bytes.NewReader(buf)
+
+	var responseType uint8
+	if err := binary.Read(br, binary.LittleEndian, &responseType); err != nil {
+		return nil, errors.Wrap(err, "reading response type")
+	}
+	if responseType != 1 {
+		var len uint8
+		if err := binary.Read(br, binary.LittleEndian, &len); err != nil {
+			return nil, errors.Wrap(err, "reading error length")
+		}
+		message := make([]byte, len)
+		if err := binary.Read(br, binary.LittleEndian, &message); err != nil {
+			return nil, errors.Wrap(err, "reading error message")
+		}
+		return nil, errors.New(string(message))
+	}
 
 	var MTU, MaxPacketSize uint16
 	if err := binary.Read(br, binary.LittleEndian, &MTU); err != nil {
@@ -137,10 +148,6 @@ func readVif(fixedSize packetReadWriter) (*Vif, error) {
 	}
 	var mac [6]byte
 	if err := binary.Read(br, binary.LittleEndian, &mac); err != nil {
-		return nil, err
-	}
-	padding := make([]byte, 1+256-6-2-2)
-	if err := binary.Read(br, binary.LittleEndian, &padding); err != nil {
 		return nil, err
 	}
 	return &Vif{
