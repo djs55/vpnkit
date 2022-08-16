@@ -92,7 +92,7 @@ func connectVif(fixedSize, ethernet packetReadWriter, uuid uuid.UUID) (*Vif, err
 	if err := vif.start(ethernet); err != nil {
 		return nil, err
 	}
-	IP, err := dhcpRequest(ethernet, vif.ClientMAC)
+	IP, err := dhcpRequest(vif.datagram, vif.ClientMAC)
 	if err != nil {
 		return nil, err
 	}
