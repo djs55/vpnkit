@@ -21,8 +21,17 @@ type Vmnet struct {
 	remoteVersion *InitMessage
 }
 
-// New constructs an instance of Vmnet.
+// New connection to vpnkit's ethernet socket.
 func New(ctx context.Context, path string) (*Vmnet, error) {
+	vmnet, err := connectDatagram(ctx, path)
+	if err == nil {
+		return vmnet, nil
+	}
+	return connectStream(ctx, path)
+}
+
+// connectStream uses the old SOCK_STREAM protocol.
+func connectStream(ctx context.Context, path string) (*Vmnet, error) {
 	d := &net.Dialer{}
 	c, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
@@ -41,9 +50,8 @@ const (
 	fdSendSuccess = "OK"
 )
 
-// NewFileDescriptor returns a SOCK_DGRAM file descriptor where ethernet frames can be
-// sent to vpnkit via send/recv.
-func NewFileDescriptor(ctx context.Context, path string) (*Vmnet, error) {
+// connectDatagram uses the new SOCK_DGRAM protocol.
+func connectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 	// Create a socketpair
 	fds, err := syscall.Socketpair(syscall.AF_LOCAL, syscall.SOCK_DGRAM, 0)
 	if err != nil {
@@ -51,6 +59,9 @@ func NewFileDescriptor(ctx context.Context, path string) (*Vmnet, error) {
 	}
 	defer func() {
 		for _, fd := range fds {
+			if fd == -1 {
+				continue
+			}
 			_ = syscall.Close(fd)
 		}
 	}()
@@ -88,6 +99,7 @@ func NewFileDescriptor(ctx context.Context, path string) (*Vmnet, error) {
 		return nil, err
 	}
 	vmnet := &Vmnet{packet, packet, packet, remoteVersion}
+	fds[1] = -1 // don't close our end of the socketpair in the defer
 	return vmnet, nil
 }
 
@@ -117,5 +129,5 @@ func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	return connectVifIP(v.raw, uuid, IP)
+	return connectVifIP(v.raw, v.packets, uuid, IP)
 }

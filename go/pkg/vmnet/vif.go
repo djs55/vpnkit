@@ -14,6 +14,7 @@ type Vif struct {
 	MaxPacketSize uint16
 	ClientMAC     net.HardwareAddr
 	IP            net.IP
+	Packet        packetReadWriter
 }
 
 func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
@@ -24,7 +25,7 @@ func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*V
 	if err := readEthernetResponse(conn); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(conn)
+	vif, err := readVif(conn, packet)
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +39,7 @@ func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*V
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
-func connectVifIP(conn io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
+func connectVifIP(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	e := NewEthernetRequest(uuid, IP)
 	if err := e.Write(conn); err != nil {
 		return nil, err
@@ -46,7 +47,7 @@ func connectVifIP(conn io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	if err := readEthernetResponse(conn); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(conn)
+	vif, err := readVif(conn, packet)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +55,7 @@ func connectVifIP(conn io.ReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	return vif, err
 }
 
-func readVif(conn io.ReadWriter) (*Vif, error) {
+func readVif(conn io.ReadWriter, packet packetReadWriter) (*Vif, error) {
 	var MTU, MaxPacketSize uint16
 
 	if err := binary.Read(conn, binary.LittleEndian, &MTU); err != nil {
@@ -73,5 +74,5 @@ func readVif(conn io.ReadWriter) (*Vif, error) {
 	}
 	ClientMAC := mac[:]
 	var IP net.IP
-	return &Vif{MTU, MaxPacketSize, ClientMAC, IP}, nil
+	return &Vif{MTU, MaxPacketSize, ClientMAC, IP, packet}, nil
 }
