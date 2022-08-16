@@ -23,12 +23,7 @@ type Vmnet struct {
 
 // New connection to vpnkit's ethernet socket.
 func New(ctx context.Context, path string) (*Vmnet, error) {
-	// Prefer the new datagram interface
-	vmnet, err := connectDatagram(ctx, path)
-	if err == nil {
-		return vmnet, nil
-	}
-	// Fall back to the stream interface
+	// use the old stream socket by default
 	return connectStream(ctx, path)
 }
 
@@ -37,8 +32,8 @@ const (
 	fdSendSuccess = "OK"
 )
 
-// connectDatagram uses the new SOCK_DGRAM protocol.
-func connectDatagram(ctx context.Context, path string) (*Vmnet, error) {
+// ConnectDatagram connects to vpnkit using the new SOCK_DGRAM protocol.
+func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 	// Create a socketpair
 	fds, err := socketpair()
 	if err != nil {
