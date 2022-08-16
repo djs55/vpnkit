@@ -16,33 +16,20 @@ import (
 // sent to and received by vpnkit.
 type Vmnet struct {
 	closer        io.Closer
-	raw           io.ReadWriter
-	packets       packetReadWriter
+	fixedSize     io.ReadWriter    // fixed-size messages used by vpnkit itself
+	packets       packetReadWriter // variable-length packets
 	remoteVersion *InitMessage
 }
 
 // New connection to vpnkit's ethernet socket.
 func New(ctx context.Context, path string) (*Vmnet, error) {
+	// Prefer the new datagram interface
 	vmnet, err := connectDatagram(ctx, path)
 	if err == nil {
 		return vmnet, nil
 	}
+	// Fall back to the stream interface
 	return connectStream(ctx, path)
-}
-
-// connectStream uses the old SOCK_STREAM protocol.
-func connectStream(ctx context.Context, path string) (*Vmnet, error) {
-	d := &net.Dialer{}
-	c, err := d.DialContext(ctx, "unix", path)
-	if err != nil {
-		return nil, err
-	}
-	remoteVersion, err := negotiate(c)
-	if err != nil {
-		return nil, err
-	}
-	vmnet := &Vmnet{c, c, ethernetStream{c}, remoteVersion}
-	return vmnet, err
 }
 
 const (
@@ -84,12 +71,17 @@ func connectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 		return nil, fmt.Errorf("sending file descriptor: %s", string(response))
 	}
 	// We can now negotiate over the socketpair
-	packet := ethernetDatagram{fds[1]}
-	remoteVersion, err := negotiate(packet)
+	datagram := ethernetDatagram{fds[1]}
+	remoteVersion, err := negotiate(datagram)
 	if err != nil {
 		return nil, err
 	}
-	vmnet := &Vmnet{packet, packet, packet, remoteVersion}
+	vmnet := &Vmnet{
+		closer:        datagram,
+		fixedSize:     datagram,
+		packets:       datagram,
+		remoteVersion: remoteVersion,
+	}
 	fds[1] = -1 // don't close our end of the socketpair in the defer
 	return vmnet, nil
 }
@@ -107,18 +99,37 @@ func sendFileDescriptor(c *net.UnixConn, msg []byte, fd int) error {
 	return syscall.Sendmsg(unixConnFd, msg, rights, nil, 0)
 }
 
-// Close closes the connection.
+// connectStream uses the old SOCK_STREAM protocol.
+func connectStream(ctx context.Context, path string) (*Vmnet, error) {
+	d := &net.Dialer{}
+	c, err := d.DialContext(ctx, "unix", path)
+	if err != nil {
+		return nil, err
+	}
+	remoteVersion, err := negotiate(c)
+	if err != nil {
+		return nil, err
+	}
+	vmnet := &Vmnet{
+		closer:        c,
+		fixedSize:     c,
+		packets:       ethernetFramer{c}, // need to add artificial message boundaries
+		remoteVersion: remoteVersion,
+	}
+	return vmnet, err
+}
+
 func (v *Vmnet) Close() error {
 	return v.closer.Close()
 }
 
 // ConnectVif returns a connected network interface with the given uuid.
 func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
-	return connectVif(v.raw, v.packets, uuid)
+	return connectVif(v.fixedSize, v.packets, uuid)
 }
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	return connectVifIP(v.raw, v.packets, uuid, IP)
+	return connectVifIP(v.fixedSize, v.packets, uuid, IP)
 }

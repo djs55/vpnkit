@@ -1,13 +1,15 @@
 package vmnet
 
 import (
+	"bytes"
 	"encoding/binary"
-	"io"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/moby/vpnkit/go/pkg/vpnkit/log"
+	"github.com/pkg/errors"
 )
 
 // Vif represents an Ethernet device
@@ -16,27 +18,43 @@ type Vif struct {
 	MaxPacketSize uint16
 	ClientMAC     net.HardwareAddr
 	IP            net.IP
-	Packet        packetReadWriter
+	datagram      ethernetDatagram
+	fds           []int
 }
 
 // Fd returns a SOCK_DGRAM which can send and receive raw ethernet frames.
-func (v *Vif) Fd() (int, error) {
-	d, ok := v.Packet.(ethernetDatagram)
-	if ok {
-		// return the raw datagram socket
-		return d.fd, nil
+func (v *Vif) Fd() int {
+	return v.datagram.fd
+}
+
+func (v *Vif) Close() error {
+	for _, fd := range v.fds {
+		_ = syscall.Close(fd)
 	}
-	// FIXME: make this global in vmnet for easier closing? and better mux/demux
+	return nil
+}
+
+// ensure we have a SOCK_DGRAM fd, by starting a proxy if necessary.
+func (v *Vif) start(ethernet packetReadWriter) error {
+	if _, ok := ethernet.(ethernetDatagram); ok {
+		// no proxy is required because we already have a datagram socket
+		return nil
+	}
 	// create a socketpair and feed one end into the packetReadWriter
 	fds, err := socketpair()
 	if err != nil {
-		return -1, err
+		return err
 	}
+	// remember the fds for Close()
+	v.fds = fds[:]
+	// client data will be written in this end
+	v.datagram = ethernetDatagram{fds[0]}
+	// and then proxied to the underlying packetReadWriter
 	proxy := ethernetDatagram{fds[1]}
-
-	go v.proxy(proxy, v.Packet)
-	go v.proxy(v.Packet, proxy)
-	return fds[0], nil
+	// proxy until the fds are closed
+	go v.proxy(proxy, ethernet)
+	go v.proxy(ethernet, proxy)
+	return nil
 }
 
 func (v *Vif) proxy(from, to packetReadWriter) {
@@ -59,19 +77,22 @@ func (v *Vif) proxy(from, to packetReadWriter) {
 	}
 }
 
-func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
+func connectVif(fixedSize, ethernet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
 	e := NewEthernetRequest(uuid, nil)
-	if err := e.Write(conn); err != nil {
+	if err := e.Write(fixedSize); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(conn); err != nil {
+	if err := readEthernetResponse(fixedSize); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(conn, packet)
+	vif, err := readVif(fixedSize)
 	if err != nil {
 		return nil, err
 	}
-	IP, err := dhcpRequest(packet, vif.ClientMAC)
+	if err := vif.start(ethernet); err != nil {
+		return nil, err
+	}
+	IP, err := dhcpRequest(ethernet, vif.ClientMAC)
 	if err != nil {
 		return nil, err
 	}
@@ -81,40 +102,50 @@ func connectVif(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID) (*V
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
-func connectVifIP(conn io.ReadWriter, packet packetReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
+func connectVifIP(fixedSize, ethernet packetReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	e := NewEthernetRequest(uuid, IP)
-	if err := e.Write(conn); err != nil {
+	if err := e.Write(fixedSize); err != nil {
 		return nil, err
 	}
-	if err := readEthernetResponse(conn); err != nil {
+	if err := readEthernetResponse(fixedSize); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(conn, packet)
+	vif, err := readVif(fixedSize)
 	if err != nil {
+		return nil, err
+	}
+	if err := vif.start(ethernet); err != nil {
 		return nil, err
 	}
 	vif.IP = IP
 	return vif, err
 }
 
-func readVif(conn io.ReadWriter, packet packetReadWriter) (*Vif, error) {
-	var MTU, MaxPacketSize uint16
+func readVif(fixedSize packetReadWriter) (*Vif, error) {
+	buf := make([]byte, 256+1)
+	if err := binary.Read(fixedSize, binary.LittleEndian, &buf); err != nil {
+		return nil, errors.Wrap(err, "reading VIF metadata")
+	}
+	br := bytes.NewReader(buf)
 
-	if err := binary.Read(conn, binary.LittleEndian, &MTU); err != nil {
+	var MTU, MaxPacketSize uint16
+	if err := binary.Read(br, binary.LittleEndian, &MTU); err != nil {
 		return nil, err
 	}
-	if err := binary.Read(conn, binary.LittleEndian, &MaxPacketSize); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &MaxPacketSize); err != nil {
 		return nil, err
 	}
 	var mac [6]byte
-	if err := binary.Read(conn, binary.LittleEndian, &mac); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &mac); err != nil {
 		return nil, err
 	}
 	padding := make([]byte, 1+256-6-2-2)
-	if err := binary.Read(conn, binary.LittleEndian, &padding); err != nil {
+	if err := binary.Read(br, binary.LittleEndian, &padding); err != nil {
 		return nil, err
 	}
-	ClientMAC := mac[:]
-	var IP net.IP
-	return &Vif{MTU, MaxPacketSize, ClientMAC, IP, packet}, nil
+	return &Vif{
+		MTU:           MTU,
+		MaxPacketSize: MaxPacketSize,
+		ClientMAC:     mac[:],
+	}, nil
 }

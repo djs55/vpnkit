@@ -41,14 +41,14 @@ func (e ethernetDatagram) Close() error {
 
 var _ packetReadWriter = ethernetDatagram{}
 
-// ethernetStream multiplexes ethernet frames onto a stream.
-type ethernetStream struct {
+// ethernetFramer multiplexes ethernet frames onto a stream.
+type ethernetFramer struct {
 	rw io.ReadWriteCloser
 }
 
-var _ packetReadWriter = ethernetStream{}
+var _ packetReadWriter = ethernetFramer{}
 
-func (e ethernetStream) Read(buf []byte) (int, error) {
+func (e ethernetFramer) Read(buf []byte) (int, error) {
 	var len uint16
 	if err := binary.Read(e.rw, binary.LittleEndian, &len); err != nil {
 		return 0, err
@@ -59,7 +59,7 @@ func (e ethernetStream) Read(buf []byte) (int, error) {
 	return int(len), nil
 }
 
-func (e ethernetStream) Write(packet []byte) (int, error) {
+func (e ethernetFramer) Write(packet []byte) (int, error) {
 	len := uint16(len(packet))
 	if err := binary.Write(e.rw, binary.LittleEndian, len); err != nil {
 		return 0, err
