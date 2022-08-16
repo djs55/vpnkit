@@ -33,5 +33,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer vif.Close()
 	log.Printf("VIF has IP %s", vif.IP)
 }
