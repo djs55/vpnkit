@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// PcapWriter writes pcap-formatted packet streams
+// PcapWriter writes pcap-formatted packet streams. The results can be analysed with tcpdump/wireshark.
 type PcapWriter struct {
 	w       io.Writer
 	snaplen uint32

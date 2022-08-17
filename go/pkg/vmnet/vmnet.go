@@ -66,7 +66,7 @@ func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 		return nil, fmt.Errorf("sending file descriptor: %s", string(response))
 	}
 	// We can now negotiate over the socketpair
-	datagram := ethernetDatagram{fds[1]}
+	datagram := Datagram{fds[1]}
 	remoteVersion, err := negotiate(datagram)
 	if err != nil {
 		return nil, err

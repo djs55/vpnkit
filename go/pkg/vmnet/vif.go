@@ -12,19 +12,15 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Vif represents an Ethernet device
+// Vif represents an Ethernet device as a file descriptor.
+// Clients should call Fd() and use send/recv to send ethernet frames.
 type Vif struct {
 	MTU           uint16
 	MaxPacketSize uint16
 	ClientMAC     net.HardwareAddr
 	IP            net.IP
-	datagram      ethernetDatagram
+	Ethernet      Datagram // Ethernet allows clients to Read() and Write() raw ethernet frames.
 	fds           []int
-}
-
-// Fd returns a SOCK_DGRAM which can send and receive raw ethernet frames.
-func (v *Vif) Fd() int {
-	return v.datagram.fd
 }
 
 func (v *Vif) Close() error {
@@ -36,7 +32,7 @@ func (v *Vif) Close() error {
 
 // ensure we have a SOCK_DGRAM fd, by starting a proxy if necessary.
 func (v *Vif) start(ethernet packetReadWriter) error {
-	if _, ok := ethernet.(ethernetDatagram); ok {
+	if _, ok := ethernet.(Datagram); ok {
 		// no proxy is required because we already have a datagram socket
 		return nil
 	}
@@ -48,9 +44,9 @@ func (v *Vif) start(ethernet packetReadWriter) error {
 	// remember the fds for Close()
 	v.fds = fds[:]
 	// client data will be written in this end
-	v.datagram = ethernetDatagram{fds[0]}
+	v.Ethernet = Datagram{fds[0]}
 	// and then proxied to the underlying packetReadWriter
-	proxy := ethernetDatagram{fds[1]}
+	proxy := Datagram{fds[1]}
 	// proxy until the fds are closed
 	go v.proxy(proxy, ethernet)
 	go v.proxy(ethernet, proxy)
@@ -89,7 +85,7 @@ func connectVif(fixedSize, ethernet packetReadWriter, uuid uuid.UUID) (*Vif, err
 	if err := vif.start(ethernet); err != nil {
 		return nil, err
 	}
-	IP, err := dhcpRequest(vif.datagram, vif.ClientMAC)
+	IP, err := dhcpRequest(vif.Ethernet, vif.ClientMAC)
 	if err != nil {
 		return nil, err
 	}
