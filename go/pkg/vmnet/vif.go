@@ -80,19 +80,19 @@ func (v *Vif) proxy(from, to sendReceiver) {
 }
 
 type connectConfig struct {
-	fixedSize sendReceiver // vpnkit protocol message read/writer
-	ethernet  sendReceiver // ethenet frame read/write
-	uuid      uuid.UUID    // vpnkit interface UUID
-	IP        net.IP       // optional requested IP address
-	pcap      string       // optional .pcap file
+	control  sendReceiver // vpnkit protocol message read/writer
+	ethernet sendReceiver // ethenet frame read/write
+	uuid     uuid.UUID    // vpnkit interface UUID
+	IP       net.IP       // optional requested IP address
+	pcap     string       // optional .pcap file
 }
 
 func connectVif(config connectConfig) (*Vif, error) {
 	e := NewEthernetRequest(config.uuid, config.IP)
-	if err := e.Send(config.fixedSize); err != nil {
+	if err := e.Send(config.control); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(config.fixedSize)
+	vif, err := readVif(config.control)
 	if err != nil {
 		return nil, err
 	}

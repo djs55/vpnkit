@@ -16,8 +16,8 @@ import (
 // sent to and received by vpnkit.
 type Vmnet struct {
 	closer        io.Closer
-	fixedSize     sendReceiver // fixed-size messages used by vpnkit itself
-	packets       sendReceiver // variable-length packets
+	control       sendReceiver // fixed-size control messages used by vpnkit itself
+	ethernet      sendReceiver // variable-length ethernet frames
 	remoteVersion *InitMessage
 	pcap          string
 }
@@ -83,8 +83,8 @@ func Connect(ctx context.Context, config Config) (*Vmnet, error) {
 	}
 	vmnet := &Vmnet{
 		closer:        datagram,
-		fixedSize:     datagram,
-		packets:       datagram,
+		control:       datagram,
+		ethernet:      datagram,
 		remoteVersion: remoteVersion,
 		pcap:          config.PCAP,
 	}
@@ -119,8 +119,8 @@ func connectStream(ctx context.Context, path string) (*Vmnet, error) {
 	}
 	vmnet := &Vmnet{
 		closer:        c,
-		fixedSize:     f,
-		packets:       lengthPrefixer{c}, // need to add artificial message boundaries
+		control:       f,
+		ethernet:      lengthPrefixer{c}, // need to add artificial message boundaries
 		remoteVersion: remoteVersion,
 	}
 	return vmnet, err
@@ -133,9 +133,9 @@ func (v *Vmnet) Close() error {
 // ConnectVif returns a connected network interface with the given uuid.
 func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
 	return connectVif(connectConfig{
-		fixedSize: v.fixedSize,
-		ethernet:  v.packets,
-		uuid:      uuid,
+		control:  v.control,
+		ethernet: v.ethernet,
+		uuid:     uuid,
 	})
 }
 
@@ -143,9 +143,9 @@ func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
 	return connectVif(connectConfig{
-		fixedSize: v.fixedSize,
-		ethernet:  v.packets,
-		uuid:      uuid,
-		IP:        IP,
+		control:  v.control,
+		ethernet: v.ethernet,
+		uuid:     uuid,
+		IP:       IP,
 	})
 }
