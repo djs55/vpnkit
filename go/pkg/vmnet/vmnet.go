@@ -16,8 +16,8 @@ import (
 // sent to and received by vpnkit.
 type Vmnet struct {
 	closer        io.Closer
-	fixedSize     io.ReadWriter    // fixed-size messages used by vpnkit itself
-	packets       packetReadWriter // variable-length packets
+	fixedSize     sendReceiver // fixed-size messages used by vpnkit itself
+	packets       sendReceiver // variable-length packets
 	remoteVersion *InitMessage
 	pcap          string
 }
@@ -112,14 +112,15 @@ func connectStream(ctx context.Context, path string) (*Vmnet, error) {
 	if err != nil {
 		return nil, err
 	}
-	remoteVersion, err := negotiate(c)
+	f := fixedSizeSendReceiver{c}
+	remoteVersion, err := negotiate(f)
 	if err != nil {
 		return nil, err
 	}
 	vmnet := &Vmnet{
 		closer:        c,
-		fixedSize:     c,
-		packets:       ethernetFramer{c}, // need to add artificial message boundaries
+		fixedSize:     f,
+		packets:       lengthPrefixer{c}, // need to add artificial message boundaries
 		remoteVersion: remoteVersion,
 	}
 	return vmnet, err

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"net"
 
@@ -14,12 +13,12 @@ import (
 
 // vpnkit internal protocol requests and responses
 
-func negotiate(rw io.ReadWriter) (*InitMessage, error) {
+func negotiate(sr sendReceiver) (*InitMessage, error) {
 	m := defaultInitMessage()
-	if err := m.Write(rw); err != nil {
+	if err := m.Send(sr); err != nil {
 		return nil, err
 	}
-	return readInitMessage(rw)
+	return readInitMessage(sr)
 }
 
 // InitMessage is used for the initial version exchange
@@ -46,7 +45,7 @@ func defaultInitMessage() *InitMessage {
 }
 
 // Write marshals an init message to a connection
-func (m *InitMessage) Write(w io.Writer) error {
+func (m *InitMessage) Send(sr sendReceiver) error {
 	var buf bytes.Buffer
 	if err := binary.Write(&buf, binary.LittleEndian, m.magic); err != nil {
 		return err
@@ -57,18 +56,19 @@ func (m *InitMessage) Write(w io.Writer) error {
 	if err := binary.Write(&buf, binary.LittleEndian, m.commit); err != nil {
 		return err
 	}
-	_, err := w.Write(buf.Bytes())
+	_, err := sr.Send(buf.Bytes())
 	return err
 }
 
 // readInitMessage unmarshals an init message from a connection
-func readInitMessage(r io.Reader) (*InitMessage, error) {
+func readInitMessage(sr sendReceiver) (*InitMessage, error) {
 	m := defaultInitMessage()
 	bs := make([]byte, sizeof_InitMessage)
-	if _, err := r.Read(bs); err != nil {
+	n, err := sr.Recv(bs)
+	if err != nil {
 		return nil, err
 	}
-	br := bytes.NewReader(bs)
+	br := bytes.NewReader(bs[0:n])
 	if err := binary.Read(br, binary.LittleEndian, &m.magic); err != nil {
 		return nil, err
 	}
@@ -95,7 +95,7 @@ func NewEthernetRequest(uuid uuid.UUID, ip net.IP) *EthernetRequest {
 }
 
 // Write marshals an EthernetRequest message
-func (m *EthernetRequest) Write(w io.Writer) error {
+func (m *EthernetRequest) Send(sr sendReceiver) error {
 	var buf bytes.Buffer
 	ty := uint8(1)
 	if m.ip != nil {
@@ -119,19 +119,19 @@ func (m *EthernetRequest) Write(w io.Writer) error {
 	if err := binary.Write(&buf, binary.LittleEndian, ip); err != nil {
 		return err
 	}
-	_, err = w.Write(buf.Bytes())
+	_, err = sr.Send(buf.Bytes())
 	return err
 }
 
 const max_ethernetResponse = 1500
 
-func readEthernetResponse(r io.Reader) error {
+func readEthernetResponse(sr sendReceiver) error {
 	bs := make([]byte, max_ethernetResponse)
-	_, err := r.Read(bs)
+	n, err := sr.Recv(bs)
 	if err != nil {
 		return err
 	}
-	br := bytes.NewReader(bs)
+	br := bytes.NewReader(bs[0:n])
 	var responseType uint8
 	if err := binary.Read(br, binary.LittleEndian, &responseType); err != nil {
 		return err

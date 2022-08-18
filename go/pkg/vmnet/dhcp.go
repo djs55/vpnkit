@@ -6,7 +6,7 @@ import (
 )
 
 // dhcp queries the IP by DHCP
-func dhcpRequest(packet packetReadWriter, clientMAC net.HardwareAddr) (net.IP, error) {
+func dhcpRequest(packet sendReceiver, clientMAC net.HardwareAddr) (net.IP, error) {
 	broadcastMAC := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
 	broadcastIP := []byte{0xff, 0xff, 0xff, 0xff}
 	unknownIP := []byte{0, 0, 0, 0}
@@ -22,7 +22,7 @@ func dhcpRequest(packet packetReadWriter, clientMAC net.HardwareAddr) (net.IP, e
 	finished := false
 	go func() {
 		for !finished {
-			if _, err := packet.Write(ethernet.Bytes()); err != nil {
+			if _, err := packet.Send(ethernet.Bytes()); err != nil {
 				panic(err)
 			}
 			time.Sleep(time.Second)
@@ -31,7 +31,7 @@ func dhcpRequest(packet packetReadWriter, clientMAC net.HardwareAddr) (net.IP, e
 
 	buf := make([]byte, 1500)
 	for {
-		n, err := packet.Read(buf)
+		n, err := packet.Recv(buf)
 		if err != nil {
 			return nil, err
 		}
