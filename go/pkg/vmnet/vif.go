@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"os"
 	"syscall"
 	"time"
 
@@ -32,8 +33,9 @@ func (v *Vif) Close() error {
 
 // ensure we have a SOCK_DGRAM fd, by starting a proxy if necessary.
 func (v *Vif) start(ethernet packetReadWriter) error {
-	if _, ok := ethernet.(Datagram); ok {
+	if e, ok := ethernet.(Datagram); ok {
 		// no proxy is required because we already have a datagram socket
+		v.Ethernet = e
 		return nil
 	}
 	// create a socketpair and feed one end into the packetReadWriter
@@ -44,9 +46,13 @@ func (v *Vif) start(ethernet packetReadWriter) error {
 	// remember the fds for Close()
 	v.fds = fds[:]
 	// client data will be written in this end
-	v.Ethernet = Datagram{fds[0]}
+	v.Ethernet = Datagram{
+		Fd: fds[0],
+	}
 	// and then proxied to the underlying packetReadWriter
-	proxy := Datagram{fds[1]}
+	proxy := Datagram{
+		Fd: fds[1],
+	}
 	// proxy until the fds are closed
 	go v.proxy(proxy, ethernet)
 	go v.proxy(ethernet, proxy)
@@ -73,41 +79,45 @@ func (v *Vif) proxy(from, to packetReadWriter) {
 	}
 }
 
-func connectVif(fixedSize, ethernet packetReadWriter, uuid uuid.UUID) (*Vif, error) {
-	e := NewEthernetRequest(uuid, nil)
-	if err := e.Write(fixedSize); err != nil {
-		return nil, err
-	}
-	vif, err := readVif(fixedSize)
-	if err != nil {
-		return nil, err
-	}
-	if err := vif.start(ethernet); err != nil {
-		return nil, err
-	}
-	IP, err := dhcpRequest(vif.Ethernet, vif.ClientMAC)
-	if err != nil {
-		return nil, err
-	}
-	vif.IP = IP
-	return vif, err
+type connectConfig struct {
+	fixedSize packetReadWriter // vpnkit protocol message read/writer
+	ethernet  packetReadWriter // ethenet frame read/write
+	uuid      uuid.UUID        // vpnkit interface UUID
+	IP        net.IP           // optional requested IP address
+	pcap      string           // optional .pcap file
 }
 
-// ConnectVifIP returns a connected network interface with the given uuid
-// and IP. If the IP is already in use then return an error.
-func connectVifIP(fixedSize, ethernet packetReadWriter, uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	e := NewEthernetRequest(uuid, IP)
-	if err := e.Write(fixedSize); err != nil {
+func connectVif(config connectConfig) (*Vif, error) {
+	e := NewEthernetRequest(config.uuid, config.IP)
+	if err := e.Write(config.fixedSize); err != nil {
 		return nil, err
 	}
-	vif, err := readVif(fixedSize)
+	vif, err := readVif(config.fixedSize)
 	if err != nil {
 		return nil, err
 	}
-	if err := vif.start(ethernet); err != nil {
+	if err := vif.start(config.ethernet); err != nil {
 		return nil, err
 	}
-	vif.IP = IP
+	if config.pcap != "" {
+		w, err := os.Create(config.pcap)
+		if err != nil {
+			return nil, errors.Wrapf(err, "creating %s", config.pcap)
+		}
+		p, err := NewPcapWriter(w)
+		if err != nil {
+			return nil, errors.Wrapf(err, "creating pcap in %s", config.pcap)
+		}
+		vif.Ethernet.pcap = p
+	}
+	vif.IP = config.IP
+	if vif.IP == nil {
+		IP, err := dhcpRequest(vif.Ethernet, vif.ClientMAC)
+		if err != nil {
+			return nil, err
+		}
+		vif.IP = IP
+	}
 	return vif, err
 }
 

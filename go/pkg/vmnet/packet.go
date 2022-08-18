@@ -12,6 +12,8 @@ import (
 	"encoding/binary"
 	"io"
 	"syscall"
+
+	"github.com/pkg/errors"
 )
 
 // Allow Go programs to send and receive raw ethernet frames via vpnkit. See for example dhcp.go.
@@ -26,15 +28,26 @@ type packetReadWriter = io.ReadWriter
 
 // Datagram sends and receives ethernet frames via send/recv over a SOCK_DGRAM fd.
 type Datagram struct {
-	Fd int // Underlying SOCK_DGRAM file descriptor.
+	Fd   int // Underlying SOCK_DGRAM file descriptor.
+	pcap *PcapWriter
 }
 
 func (e Datagram) Read(buf []byte) (int, error) {
 	num, _, err := syscall.Recvfrom(e.Fd, buf, 0)
+	if e.pcap != nil {
+		if err := e.pcap.Write(buf[0:num]); err != nil {
+			return 0, errors.Wrap(err, "writing to pcap")
+		}
+	}
 	return num, err
 }
 
 func (e Datagram) Write(packet []byte) (int, error) {
+	if e.pcap != nil {
+		if err := e.pcap.Write(packet); err != nil {
+			return 0, errors.Wrap(err, "writing to pcap")
+		}
+	}
 	result, err := C.send(C.int(e.Fd), C.CBytes(packet), C.size_t(len(packet)), 0)
 	if result == -1 {
 		return 0, err

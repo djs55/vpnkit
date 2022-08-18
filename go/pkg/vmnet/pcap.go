@@ -3,6 +3,7 @@ package vmnet
 import (
 	"encoding/binary"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -10,6 +11,7 @@ import (
 type PcapWriter struct {
 	w       io.Writer
 	snaplen uint32
+	m       sync.Mutex
 }
 
 // NewPcapWriter creates a PcapWriter and writes the initial header
@@ -42,11 +44,16 @@ func NewPcapWriter(w io.Writer) (*PcapWriter, error) {
 	if err := binary.Write(w, binary.LittleEndian, network); err != nil {
 		return nil, err
 	}
-	return &PcapWriter{w, snaplen}, nil
+	return &PcapWriter{
+		w:       w,
+		snaplen: snaplen,
+	}, nil
 }
 
 // Write appends a packet with a pcap-format header
 func (p *PcapWriter) Write(packet []byte) error {
+	p.m.Lock()
+	defer p.m.Unlock()
 	stamp := time.Now()
 	s := uint32(stamp.Second())
 	us := uint32(stamp.Nanosecond() / 1000)

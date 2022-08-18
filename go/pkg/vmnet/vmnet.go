@@ -19,9 +19,11 @@ type Vmnet struct {
 	fixedSize     io.ReadWriter    // fixed-size messages used by vpnkit itself
 	packets       packetReadWriter // variable-length packets
 	remoteVersion *InitMessage
+	pcap          string
 }
 
 // New connection to vpnkit's ethernet socket.
+// This function is deprecated, use Connect instead.
 func New(ctx context.Context, path string) (*Vmnet, error) {
 	// use the old stream socket by default
 	return connectStream(ctx, path)
@@ -32,8 +34,14 @@ const (
 	fdSendSuccess = "OK"
 )
 
-// ConnectDatagram connects to vpnkit using the new SOCK_DGRAM protocol.
-func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
+// Config for Connect.
+type Config struct {
+	Path string // Path to the vpnkit ethernet socket.
+	PCAP string // PCAP file to capture packets.
+}
+
+// Connect connects to vpnkit using the new SOCK_DGRAM protocol.
+func Connect(ctx context.Context, config Config) (*Vmnet, error) {
 	// Create a socketpair
 	fds, err := socketpair()
 	if err != nil {
@@ -49,9 +57,9 @@ func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 	}()
 
 	// Dial over SOCK_STREAM, passing fd and magic
-	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: path, Net: "unix"})
+	c, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: config.Path, Net: "unix"})
 	if err != nil {
-		return nil, errors.Wrap(err, "dialing "+path)
+		return nil, errors.Wrap(err, "dialing "+config.Path)
 	}
 	defer c.Close()
 	if err := sendFileDescriptor(c, []byte(fdSendMagic), fds[0]); err != nil {
@@ -66,7 +74,9 @@ func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 		return nil, fmt.Errorf("sending file descriptor: %s", string(response))
 	}
 	// We can now negotiate over the socketpair
-	datagram := Datagram{fds[1]}
+	datagram := Datagram{
+		Fd: fds[1],
+	}
 	remoteVersion, err := negotiate(datagram)
 	if err != nil {
 		return nil, err
@@ -76,6 +86,7 @@ func ConnectDatagram(ctx context.Context, path string) (*Vmnet, error) {
 		fixedSize:     datagram,
 		packets:       datagram,
 		remoteVersion: remoteVersion,
+		pcap:          config.PCAP,
 	}
 	fds[1] = -1 // don't close our end of the socketpair in the defer
 	return vmnet, nil
@@ -120,11 +131,20 @@ func (v *Vmnet) Close() error {
 
 // ConnectVif returns a connected network interface with the given uuid.
 func (v *Vmnet) ConnectVif(uuid uuid.UUID) (*Vif, error) {
-	return connectVif(v.fixedSize, v.packets, uuid)
+	return connectVif(connectConfig{
+		fixedSize: v.fixedSize,
+		ethernet:  v.packets,
+		uuid:      uuid,
+	})
 }
 
 // ConnectVifIP returns a connected network interface with the given uuid
 // and IP. If the IP is already in use then return an error.
 func (v *Vmnet) ConnectVifIP(uuid uuid.UUID, IP net.IP) (*Vif, error) {
-	return connectVifIP(v.fixedSize, v.packets, uuid, IP)
+	return connectVif(connectConfig{
+		fixedSize: v.fixedSize,
+		ethernet:  v.packets,
+		uuid:      uuid,
+		IP:        IP,
+	})
 }
