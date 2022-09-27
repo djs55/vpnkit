@@ -37,4 +37,5 @@ func main() {
 	}
 	defer vif.Close()
 	log.Printf("VIF has IP %s", vif.IP)
+	log.Printf("SOCK_DGRAM fd: %d", vif.Ethernet.Fd)
 }
