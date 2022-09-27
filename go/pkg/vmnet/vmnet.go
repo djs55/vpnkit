@@ -19,6 +19,7 @@ type Vmnet struct {
 	control       sendReceiver // fixed-size control messages used by vpnkit itself
 	ethernet      sendReceiver // variable-length ethernet frames
 	remoteVersion *InitMessage
+	fd            int
 	pcap          string
 }
 
@@ -86,10 +87,20 @@ func Connect(ctx context.Context, config Config) (*Vmnet, error) {
 		control:       datagram,
 		ethernet:      datagram,
 		remoteVersion: remoteVersion,
+		fd:            datagram.Fd,
 		pcap:          config.PCAP,
 	}
 	fds[1] = -1 // don't close our end of the socketpair in the defer
 	return vmnet, nil
+}
+
+// Fd returns the datagram file descriptor used to send and receive ethernet frames.
+// Returns an error if we aren't using a datagram-based protocol.
+func (v *Vmnet) Fd() (int, error) {
+	if v.fd == -1 {
+		return 0, errors.New("no datagram filedescriptor is available")
+	}
+	return v.fd, nil
 }
 
 func sendFileDescriptor(c *net.UnixConn, msg []byte, fd int) error {
@@ -122,6 +133,7 @@ func connectStream(ctx context.Context, path string) (*Vmnet, error) {
 		control:       f,
 		ethernet:      lengthPrefixer{c}, // need to add artificial message boundaries
 		remoteVersion: remoteVersion,
+		fd:            -1,
 	}
 	return vmnet, err
 }
