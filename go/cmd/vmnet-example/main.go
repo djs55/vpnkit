@@ -19,7 +19,9 @@ func main() {
 	if path == "" {
 		fmt.Fprintf(os.Stderr, "Please supply a --path argument\n")
 	}
-	vm, err := vmnet.New(context.Background(), path)
+	vm, err := vmnet.Connect(context.Background(), vmnet.Config{
+		Path: path,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
