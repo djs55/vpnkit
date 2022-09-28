@@ -1,134 +1,81 @@
-type 'a request = {
-  buf: Cstruct.t;
-  done_u: 'a Lwt.u;
-}
+let src =
+  let src = Logs.Src.create "Datagram" ~doc:"Host SOCK_DGRAM implementation" in
+  Logs.Src.set_level src (Some Logs.Info);
+  src
 
-type 'a one_direction = {
-  mutable request: 'a request option;
-  mutable closed: bool;
-  c: Condition.t;
-  m: Mutex.t;
-}
-
-let push d buf =
-  let done_t, done_u = Lwt.task () in
-  let r = { buf; done_u } in
-  Mutex.lock d.m;
-  match d.closed, d.request with
-  | true, _ ->
-    Lwt.wakeup_exn done_u (Failure "socket is closed");
-    Mutex.unlock d.m;
-    done_t
-  | false, Some _ ->
-    (* Expect at-most-one in progress operation at a time *)
-    Lwt.wakeup_exn done_u (Failure "request already in progress");
-    Mutex.unlock d.m;
-    done_t
-  | false, None ->
-    d.request <- Some r;
-    Condition.signal d.c;
-    Mutex.unlock d.m;
-    done_t
-
-let worker f d =
-  Thread.create (fun () ->
-    Mutex.lock d.m;
-    let rec loop () =
-      while not d.closed && d.request = None do
-        Condition.wait d.c d.m;
-      done;
-      begin match d.request with
-      | None -> ()
-      | Some r ->
-        d.request <- None;
-        try
-          let result = f r in
-          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later r.done_u result)
-        with e ->
-          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_exn r.done_u e)
-      end;
-      if not d.closed then loop () in
-    loop ()
-  ) ()
-
-let close d =
-  Mutex.lock d.m;
-  d.closed <- true;
-  Condition.signal d.c;
-  Mutex.unlock d.m
-
-let make_one_direction f =
-  let d = {
-    request = None;
-    closed = false;
-    c = Condition.create();
-    m = Mutex.create();
-  } in
-  let (_: Thread.t) = worker f d in
-  d
+module Log = (val Logs.src_log src : Logs.LOG)
 
 type flow = {
   fd: Unix.file_descr;
-  send: int one_direction;
+  send_q: bytes Queue.t; (* TODO: limit *)
+  send_m: Mutex.t;
+  send_c: Condition.t;
   recv_q: bytes Queue.t; (* TODO: limit *)
   recv_m: Mutex.t;
   mutable recv_u: bytes Lwt.u option;
-
   mtu: int;
 }
 
-let of_bound_fd ?(mtu=8192) fd =
-  let send_buffer = Bytes.create mtu in
-  let send = make_one_direction (fun request ->
-    let len = min (Cstruct.length request.buf) (Bytes.length send_buffer) in
-    Cstruct.blit_to_bytes request.buf 0 send_buffer 0 len;
-    (* Log.info (fun f -> f "Unix send %d" len); *)
-    Unix.send fd send_buffer 0 len []
-  ) in
+let of_bound_fd ?(mtu=65536) fd =
+  Log.info (fun f -> f "SOCK_DGRAM interface using MTU %d" mtu);
+  let send_q = Queue.create () in
+  let send_m = Mutex.create () in
+  let send_c = Condition.create () in
+  let _ : Thread.t = Thread.create (fun () ->
+    try
+      while true do
+        Mutex.lock send_m;
+        while Queue.is_empty send_q do
+          Condition.wait send_c send_m;
+        done;
+        let to_send = Queue.copy send_q in
+        Queue.clear send_q;
+        Mutex.unlock send_m;
+        Queue.iter (fun packet ->
+          try
+            let (_: int) = Unix.send fd packet 0 (Bytes.length packet) [] in
+            ()
+          with Unix.Unix_error(Unix.ENOBUFS, _, _) ->
+            (* If we're out of buffer space we have to drop the packet *)
+            Log.warn (fun f -> f "ENOBUFS: dropping packet")
+        ) to_send;
+      done
+    with Unix.Unix_error(Unix.EBADF, _, _) -> ()
+  ) () in
   let recv_q = Queue.create () in
   let recv_m = Mutex.create () in
   let recv_u = None in
-  let t = {fd; send; recv_q; recv_m; recv_u; mtu} in
+  let t = {fd; send_q; send_m; send_c; recv_q; recv_m; recv_u; mtu} in
   let _: Thread.t = Thread.create (fun() ->
-    while true do
-      let recv_buffer = Bytes.create mtu in
-      let n = Unix.recv fd recv_buffer 0 mtu [] in
-      let packet = Bytes.sub recv_buffer 0 n in
-      Mutex.lock recv_m;
-      begin match t.recv_u with
-      | None ->
-        (* No-one is waiting so queue the packet *)
-        Queue.push packet recv_q;
-      | Some waiter ->
-        (* A caller is blocked in recv already *)
-        Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
-        t.recv_u <- None
-      end;
-      (* Is someone already waiting *)
-      Mutex.unlock recv_m;
-    done
+    try
+      while true do
+        let recv_buffer = Bytes.create mtu in
+        let n = Unix.recv fd recv_buffer 0 mtu [] in
+        let packet = Bytes.sub recv_buffer 0 n in
+        Mutex.lock recv_m;
+        begin match t.recv_u with
+        | None ->
+          (* No-one is waiting so queue the packet *)
+          Queue.push packet recv_q;
+        | Some waiter ->
+          (* A caller is blocked in recv already *)
+          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
+          t.recv_u <- None
+        end;
+        (* Is someone already waiting *)
+        Mutex.unlock recv_m;
+      done
+    with Unix.Unix_error(Unix.EBADF, _, _) -> ()
   ) () in
-  (*
-  let recv_buffer = Bytes.create mtu in
-  let recv = make_one_direction (fun request ->
-    let len = min (Cstruct.length request.buf) (Bytes.length send_buffer) in
-    let n = Unix.recv fd recv_buffer 0 len [] in
-    (* Log.info (fun f -> f "Unix recv %d (buffer size %d)" n len); *)
-    Cstruct.blit_from_bytes recv_buffer 0 request.buf 0 n;
-    n
-  ) in
-  *)
   Lwt.return t
 
 let send flow buf =
-  Lwt.catch
-    (fun () -> push flow.send buf)
-    (function
-      | Unix.Unix_error(Unix.ENOBUFS, _, _) ->
-        (* If we're out of buffer space we have to drop the packet *)
-        Lwt.return 0
-      | e ->
-        Lwt.fail e)
+  let bytes = Cstruct.to_bytes buf in
+  Mutex.lock flow.send_m;
+  Queue.push bytes flow.send_q;
+  Condition.signal flow.send_c;
+  Mutex.unlock flow.send_m;
+  Lwt.return (Bytes.length bytes)
 
 let recv flow buf =
   let return_packet packet =
@@ -156,7 +103,6 @@ let recv flow buf =
   end
 
 let close flow =
-  close flow.send;
   Unix.close flow.fd
 
 let%test_unit "socketpair" =
