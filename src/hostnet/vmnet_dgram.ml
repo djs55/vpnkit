@@ -471,7 +471,7 @@ module Make(C: Sig.UNIX_DGRAM) = struct
 
     let last_error_log = ref 0. in
     let rec loop () =
-      let buf = Cstruct.create t.mtu in
+      let buf = Cstruct.create (t.mtu + ethernet_header_length) in
       (with_fd t @@ fun fd ->
        C.recv fd buf
        >>= fun n ->
