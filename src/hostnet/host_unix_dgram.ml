@@ -70,25 +70,55 @@ let make_one_direction f =
 type flow = {
   fd: Unix.file_descr;
   send: int one_direction;
-  recv: int one_direction;
+  recv_q: bytes Queue.t; (* TODO: limit *)
+  recv_m: Mutex.t;
+  mutable recv_u: bytes Lwt.u option;
+
   mtu: int;
 }
 
-let of_bound_fd ?(mtu=1500) fd =
+let of_bound_fd ?(mtu=8192) fd =
   let send_buffer = Bytes.create mtu in
   let send = make_one_direction (fun request ->
     let len = min (Cstruct.length request.buf) (Bytes.length send_buffer) in
     Cstruct.blit_to_bytes request.buf 0 send_buffer 0 len;
+    (* Log.info (fun f -> f "Unix send %d" len); *)
     Unix.send fd send_buffer 0 len []
   ) in
+  let recv_q = Queue.create () in
+  let recv_m = Mutex.create () in
+  let recv_u = None in
+  let t = {fd; send; recv_q; recv_m; recv_u; mtu} in
+  let _: Thread.t = Thread.create (fun() ->
+    while true do
+      let recv_buffer = Bytes.create mtu in
+      let n = Unix.recv fd recv_buffer 0 mtu [] in
+      let packet = Bytes.sub recv_buffer 0 n in
+      Mutex.lock recv_m;
+      begin match t.recv_u with
+      | None ->
+        (* No-one is waiting so queue the packet *)
+        Queue.push packet recv_q;
+      | Some waiter ->
+        (* A caller is blocked in recv already *)
+        Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
+        t.recv_u <- None
+      end;
+      (* Is someone already waiting *)
+      Mutex.unlock recv_m;
+    done
+  ) () in
+  (*
   let recv_buffer = Bytes.create mtu in
   let recv = make_one_direction (fun request ->
     let len = min (Cstruct.length request.buf) (Bytes.length send_buffer) in
     let n = Unix.recv fd recv_buffer 0 len [] in
+    (* Log.info (fun f -> f "Unix recv %d (buffer size %d)" n len); *)
     Cstruct.blit_from_bytes recv_buffer 0 request.buf 0 n;
     n
   ) in
-  Lwt.return {fd; send; recv; mtu}
+  *)
+  Lwt.return t
 
 let send flow buf =
   Lwt.catch
@@ -100,11 +130,33 @@ let send flow buf =
       | e ->
         Lwt.fail e)
 
-let recv flow buf = push flow.recv buf
+let recv flow buf =
+  let return_packet packet =
+    if Bytes.length packet > (Cstruct.length buf)
+    then Log.warn (fun f -> f "received packet is truncated from %d to %d" (Bytes.length packet) (Cstruct.length buf));
+    let n = min (Bytes.length packet) (Cstruct.length buf) in
+    Cstruct.blit_from_bytes packet 0 buf 0 n;
+    Lwt.return n in
+  Mutex.lock flow.recv_m;
+  if not(Queue.is_empty flow.recv_q) then begin
+    (* A packet is already queued *)
+    let packet = Queue.pop flow.recv_q in
+    Mutex.unlock flow.recv_m;
+    return_packet packet
+  end else begin
+    (* The TCP stack should only call recv serially, otherwise packets will be permuted *)
+    assert (flow.recv_u = None);
+    let t, u = Lwt.wait () in
+    flow.recv_u <- Some u;
+    Mutex.unlock flow.recv_m;
+    (* Wait for a packet to arrive *)
+    let open Lwt.Infix in
+    t >>= fun packet ->
+    return_packet packet
+  end
 
 let close flow =
   close flow.send;
-  close flow.recv;
   Unix.close flow.fd
 
 let%test_unit "socketpair" =
