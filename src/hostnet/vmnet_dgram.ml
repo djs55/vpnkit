@@ -245,11 +245,10 @@ module Make(C: Sig.UNIX_DGRAM) = struct
     else Lwt.return_unit
 
   let read_exactly len flow =
-    let buf = Cstruct.create len in
-    C.recv flow buf
-    >>= fun n ->
-    if n <> Cstruct.length buf
-    then Lwt.fail_with (Printf.sprintf "recv: buffer length is %d but only received %d" (Cstruct.length buf) n)
+    C.recv flow
+    >>= fun buf ->
+    if len <> Cstruct.length buf
+    then Lwt.fail_with (Printf.sprintf "recv: expected length is %d but only received %d" len (Cstruct.length buf))
     else Lwt.return buf
     
   let server_negotiate ~fd ~connect_client_fn ~mtu =
@@ -471,16 +470,13 @@ module Make(C: Sig.UNIX_DGRAM) = struct
 
     let last_error_log = ref 0. in
     let rec loop () =
-      let buf = Cstruct.create (t.mtu + ethernet_header_length) in
       (with_fd t @@ fun fd ->
-       C.recv fd buf
-       >>= fun n ->
-       let frame = Cstruct.create n in
-       Cstruct.blit buf 0 frame 0 n;
-       capture t [frame] >>= fun () ->
+       C.recv fd
+       >>= fun buf ->
+       capture t [buf] >>= fun () ->
        Log.debug (fun f ->
            let b = Buffer.create 128 in
-           Cstruct.hexdump_to_buffer b frame;
+           Cstruct.hexdump_to_buffer b buf;
            f "received%s" (Buffer.contents b)
          );
        let callback buf =
@@ -496,9 +492,9 @@ module Make(C: Sig.UNIX_DGRAM) = struct
              Lwt.return_unit
            )
        in
-       Lwt.async (fun () -> callback frame);
+       Lwt.async (fun () -> callback buf);
        List.iter (fun callback ->
-           Lwt.async (fun () -> callback frame)
+           Lwt.async (fun () -> callback buf)
          ) t.listeners;
        Lwt.return true
       ) >>= function

@@ -7,12 +7,12 @@ module Log = (val Logs.src_log src : Logs.LOG)
 
 type flow = {
   fd: Unix.file_descr;
-  send_q: bytes Queue.t; (* TODO: limit *)
+  send_q: Cstruct.t Queue.t; (* TODO: limit *)
   send_m: Mutex.t;
   send_c: Condition.t;
-  recv_q: bytes Queue.t; (* TODO: limit *)
+  recv_q: Cstruct.t Queue.t; (* TODO: limit *)
   recv_m: Mutex.t;
-  mutable recv_u: bytes Lwt.u option;
+  mutable recv_u: Cstruct.t Lwt.u option;
   mtu: int;
 }
 
@@ -33,7 +33,7 @@ let of_bound_fd ?(mtu=65536) fd =
         Mutex.unlock send_m;
         Queue.iter (fun packet ->
           try
-            let (_: int) = Unix.send fd packet 0 (Bytes.length packet) [] in
+            let (_: int) = Utils.cstruct_send fd packet in
             ()
           with Unix.Unix_error(Unix.ENOBUFS, _, _) ->
             (* If we're out of buffer space we have to drop the packet *)
@@ -49,9 +49,9 @@ let of_bound_fd ?(mtu=65536) fd =
   let _: Thread.t = Thread.create (fun() ->
     try
       while true do
-        let recv_buffer = Bytes.create mtu in
-        let n = Unix.recv fd recv_buffer 0 mtu [] in
-        let packet = Bytes.sub recv_buffer 0 n in
+        let recv_buffer = Cstruct.create mtu in
+        let n = Utils.cstruct_recv fd recv_buffer in
+        let packet = Cstruct.sub recv_buffer 0 n in
         Mutex.lock recv_m;
         begin match t.recv_u with
         | None ->
@@ -70,26 +70,23 @@ let of_bound_fd ?(mtu=65536) fd =
   Lwt.return t
 
 let send flow buf =
-  let bytes = Cstruct.to_bytes buf in
+  (* Since we don't wait to send the buffer we have to copy it *)
+  let len = Cstruct.length buf in
+  let copy = Cstruct.create len in
+  Cstruct.blit buf 0 copy 0 len;
   Mutex.lock flow.send_m;
-  Queue.push bytes flow.send_q;
+  Queue.push copy flow.send_q;
   Condition.signal flow.send_c;
   Mutex.unlock flow.send_m;
-  Lwt.return (Bytes.length bytes)
+  Lwt.return len
 
-let recv flow buf =
-  let return_packet packet =
-    if Bytes.length packet > (Cstruct.length buf)
-    then Log.warn (fun f -> f "received packet is truncated from %d to %d" (Bytes.length packet) (Cstruct.length buf));
-    let n = min (Bytes.length packet) (Cstruct.length buf) in
-    Cstruct.blit_from_bytes packet 0 buf 0 n;
-    Lwt.return n in
+let recv flow =
   Mutex.lock flow.recv_m;
   if not(Queue.is_empty flow.recv_q) then begin
     (* A packet is already queued *)
     let packet = Queue.pop flow.recv_q in
     Mutex.unlock flow.recv_m;
-    return_packet packet
+    Lwt.return packet
   end else begin
     (* The TCP stack should only call recv serially, otherwise packets will be permuted *)
     assert (flow.recv_u = None);
@@ -97,9 +94,7 @@ let recv flow buf =
     flow.recv_u <- Some u;
     Mutex.unlock flow.recv_m;
     (* Wait for a packet to arrive *)
-    let open Lwt.Infix in
-    t >>= fun packet ->
-    return_packet packet
+    t
   end
 
 let close flow =
@@ -130,9 +125,9 @@ let%test_unit "socketpair" =
           >>= fun () ->
           loop () in
       let _ = loop () in
-      let buf = Cstruct.create 1024 in
-      recv b_flow buf
-      >>= fun n ->
+      recv b_flow
+      >>= fun buf ->
+      let n = Cstruct.length buf in
       if n <> 5 then failwith (Printf.sprintf "recv returned %d, expected 5" n);
       let received = Cstruct.(to_string (sub buf 0 n)) in
       if received <> "hello" then failwith (Printf.sprintf "recv returned '%s', expected 'hello'" received);
@@ -154,21 +149,26 @@ let pp_write_error = pp_error
 open Lwt.Infix
 
 let read t =
-  let buf = Cstruct.create t.mtu in
-  recv t buf
-  >>= fun n ->
+  recv t
+  >>= fun buf ->
+  let n = Cstruct.length buf in
   if n = 0
   then Lwt.return @@ Ok `Eof
   else Lwt.return @@ Ok (`Data (Cstruct.sub buf 0 n))
 
+let read_into _t _buf = failwith "read_into not implemented for SOCK_DGRAM"
+(*
 let read_into t buf =
   (* FIXME: this API doesn't work with datagrams *)
-  recv t buf
-  >>= fun n ->
+  recv t
+  >>= fun buf' ->
+  let n = Cstruct.length buf' in
   if n <> Cstruct.length buf
   then failwith (Printf.sprintf "read_into buf len = %d, only read %d" (Cstruct.length buf) n)
-  else Lwt.return @@ Ok (`Data ())
-
+  else
+    Cstruct.blit buf' 0 buf 0 
+    Lwt.return @@ Ok (`Data ())
+*)
 let write t buf =
   send t buf
   >>= fun n ->
@@ -278,9 +278,9 @@ let%test_unit "host_unix_dgram" =
       >>= fun server ->
       listen server
         (fun flow ->
-          let buf = Cstruct.create 1024 in
-          recv flow buf
-          >>= fun n ->
+          recv flow
+          >>= fun buf ->
+          let n = Cstruct.length buf in
           send flow (Cstruct.sub buf 0 n)
           >>= fun m ->
           if n <> m then failwith (Printf.sprintf "n (%d) <> m (%d)" n m);
@@ -295,9 +295,9 @@ let%test_unit "host_unix_dgram" =
       >>= fun n ->
       if n <> (String.length message)
       then failwith (Printf.sprintf "n (%d) <> String.length message (%d)" n (String.length message));
-      let buf = Cstruct.create (String.length message) in
-      recv flow buf
-      >>= fun n ->
+      recv flow
+      >>= fun buf ->
+      let n = Cstruct.length buf in
       if n <> (String.length message)
       then failwith (Printf.sprintf "n (%d) <> String.length message (%d)" n (String.length message));
       let response = Cstruct.to_string buf in

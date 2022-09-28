@@ -73,7 +73,7 @@ module type UNIX_DGRAM = sig
 
   val send: flow -> Cstruct.t -> int Lwt.t
 
-  val recv: flow -> Cstruct.t -> int Lwt.t
+  val recv: flow -> Cstruct.t Lwt.t
 
   val close: flow -> unit Lwt.t
 
