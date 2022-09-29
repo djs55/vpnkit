@@ -34,6 +34,7 @@ let of_bound_fd ?(mtu=65536) fd =
         Queue.iter (fun packet ->
           try
             let n = Utils.cstruct_send fd packet in
+            Log.debug (fun f -> f "send %d" n);
             let len = Cstruct.length packet in
             if n <> len
             then Log.warn (fun f -> f "Utils.cstruct_send packet length %d but sent only %d" len n)
@@ -63,6 +64,7 @@ let of_bound_fd ?(mtu=65536) fd =
         let n = Utils.cstruct_recv fd !recv_buffer in
         let packet = Cstruct.sub !recv_buffer 0 n in
         recv_buffer := Cstruct.shift !recv_buffer n;
+        Log.debug (fun f -> f "recv %d" n);
         Mutex.lock recv_m;
         begin match t.recv_u with
         | None ->
