@@ -537,7 +537,10 @@ let hvsock_addr_of_uri ~default_serviceid uri =
     Logging.setup level;
     Log.info (fun f -> f "Starting");
 
-
+    let mtu = if mtu > Constants.max_working_mtu then begin
+      Log.warn (fun f -> f "capping MTU at the maximum known safe value %d" Constants.max_working_mtu);
+      Constants.max_working_mtu
+    end else mtu in
     let host_names = List.map Dns.Name.of_string @@ Astring.String.cuts ~sep:"," host_names in
     let gateway_names = List.map Dns.Name.of_string @@ Astring.String.cuts ~sep:"," gateway_names in
     let vm_names = List.map Dns.Name.of_string @@ Astring.String.cuts ~sep:"," vm_names in
