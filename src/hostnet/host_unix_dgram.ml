@@ -11,6 +11,8 @@ type flow = {
   (* A transmit queue. Packets are transmitted asynchronously by a background thread. *)
   send_q: Cstruct.t Queue.t;
   mutable send_done: bool;
+  mutable send_len: int;
+  send_waiters: unit Lwt.u Queue.t;
   send_m: Mutex.t;
   send_c: Condition.t;
   (* A receive queue. Packets are received asynchronously by a background thread. *)
@@ -30,93 +32,105 @@ let max_buffer = Constants.mib
 
 exception Done
 
+let send_thread t =
+  try
+    while true do
+      Mutex.lock t.send_m;
+      while Queue.is_empty t.send_q && not t.send_done do
+        Condition.wait t.send_c t.send_m;
+      done;
+      if t.send_done then raise Done;
+      let to_send = Queue.copy t.send_q in
+      Queue.clear t.send_q;
+      t.send_len <- 0;
+      let to_wake = Queue.copy t.send_waiters in
+      Queue.clear t.send_waiters;
+      Luv_lwt.in_lwt_async (fun () ->
+        (* Wake up all blocked calls to send *)
+        Queue.iter (fun u -> Lwt.wakeup_later u ()) to_wake;
+      );
+      Mutex.unlock t.send_m;
+      Queue.iter (fun packet ->
+        try
+          let n = Utils.cstruct_send t.fd packet in
+          Log.debug (fun f -> f "send %d" n);
+          let len = Cstruct.length packet in
+          if n <> len
+          then Log.warn (fun f -> f "Utils.cstruct_send packet length %d but sent only %d" len n);
+          t.send_len <- t.send_len - len;
+        with Unix.Unix_error(Unix.ENOBUFS, _, _) ->
+          (* If we're out of buffer space we have to drop the packet *)
+          Log.warn (fun f -> f "ENOBUFS: dropping packet")
+      ) to_send;
+    done
+  with
+  | Unix.Unix_error(Unix.EBADF, _, _) ->
+    Log.info (fun f -> f "send: EBADFD: connection has been closed, stopping thread")
+  | Done ->
+    Log.info (fun f -> f "send: fd has been closed, stopping thread")
+  | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
+    Log.info (fun f -> f "send: ECONNREFUSED: stopping thread")
+
+let receive_thread t =
+  try
+    (* Many packets are small ACKs so cache an allocated buffer *)
+    let allocation_size = Constants.mib in
+    let recv_buffer = ref (Cstruct.create allocation_size) in
+    while true do
+      if Cstruct.length !recv_buffer < t.mtu
+      then recv_buffer := Cstruct.create allocation_size;
+      let n = Utils.cstruct_recv t.fd !recv_buffer in
+      let packet = Cstruct.sub !recv_buffer 0 n in
+      recv_buffer := Cstruct.shift !recv_buffer n;
+      Log.debug (fun f -> f "recv %d" n);
+      Mutex.lock t.recv_m;
+      let handled = ref false in
+      while not !handled do
+        match t.recv_u with
+        | None ->
+          (* No-one is waiting so consider queueing the packet *)
+          if n + t.recv_len > max_buffer then begin
+            Condition.wait t.recv_c t.recv_m
+            (* Note we need to check t.recv_u again *)
+          end else begin
+            Queue.push packet t.recv_q;
+            t.recv_len <- t.recv_len + n;
+            handled := true;
+          end
+        | Some waiter ->
+          (* A caller is blocked in recv already *)
+          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
+          t.recv_u <- None;
+          handled := true;
+      done;
+      (* Is someone already waiting *)
+      Mutex.unlock t.recv_m;
+    done
+  with
+  | Unix.Unix_error(Unix.EBADF, _, _) ->
+    Log.info (fun f -> f "recv: EBADFD: connection has been closed, stopping thread")
+  | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
+    Log.info (fun f -> f "recv: ECONNREFUSED: stopping thread")
+
 let of_bound_fd ?(mtu=65536) fd =
   Log.info (fun f -> f "SOCK_DGRAM interface using MTU %d" mtu);
-  let send_q = Queue.create () in
-  let send_done = false in
-  let send_m = Mutex.create () in
-  let send_c = Condition.create () in
-  let recv_q = Queue.create () in
-  let recv_len = 0 in
-  let recv_m = Mutex.create () in
-  let recv_c = Condition.create () in
-  let recv_u = None in
-  let t = {fd; send_q; send_done; send_m; send_c; recv_q; recv_len; recv_m; recv_c; recv_u; mtu} in
-
-  let _ : Thread.t = Thread.create (fun () ->
-    (* Background transmit thread *)
-    try
-      while true do
-        Mutex.lock send_m;
-        while Queue.is_empty send_q && not t.send_done do
-          Condition.wait send_c send_m;
-        done;
-        if t.send_done then raise Done;
-        let to_send = Queue.copy send_q in
-        Queue.clear send_q;
-        Mutex.unlock send_m;
-        Queue.iter (fun packet ->
-          try
-            let n = Utils.cstruct_send fd packet in
-            Log.debug (fun f -> f "send %d" n);
-            let len = Cstruct.length packet in
-            if n <> len
-            then Log.warn (fun f -> f "Utils.cstruct_send packet length %d but sent only %d" len n)
-          with Unix.Unix_error(Unix.ENOBUFS, _, _) ->
-            (* If we're out of buffer space we have to drop the packet *)
-            Log.warn (fun f -> f "ENOBUFS: dropping packet")
-        ) to_send;
-      done
-    with
-    | Unix.Unix_error(Unix.EBADF, _, _) ->
-      Log.info (fun f -> f "send: EBADFD: connection has been closed, stopping thread")
-    | Done ->
-      Log.info (fun f -> f "send: fd has been closed, stopping thread")
-    | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
-      Log.info (fun f -> f "send: ECONNREFUSED: stopping thread")
-  ) () in
-
-  let _: Thread.t = Thread.create (fun() ->
-    try
-      (* Many packets are small ACKs so cache an allocated buffer *)
-      let allocation_size = Constants.mib in
-      let recv_buffer = ref (Cstruct.create allocation_size) in
-      while true do
-        if Cstruct.length !recv_buffer < mtu
-        then recv_buffer := Cstruct.create allocation_size;
-        let n = Utils.cstruct_recv fd !recv_buffer in
-        let packet = Cstruct.sub !recv_buffer 0 n in
-        recv_buffer := Cstruct.shift !recv_buffer n;
-        Log.debug (fun f -> f "recv %d" n);
-        Mutex.lock recv_m;
-        let handled = ref false in
-        while not !handled do
-          match t.recv_u with
-          | None ->
-            (* No-one is waiting so consider queueing the packet *)
-            if n + t.recv_len > max_buffer then begin
-              Condition.wait t.recv_c t.recv_m
-              (* Note we need to check t.recv_u again *)
-            end else begin
-              Queue.push packet recv_q;
-              t.recv_len <- t.recv_len + n;
-              handled := true;
-            end
-          | Some waiter ->
-            (* A caller is blocked in recv already *)
-            Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
-            t.recv_u <- None;
-            handled := true;
-        done;
-        (* Is someone already waiting *)
-        Mutex.unlock recv_m;
-      done
-    with
-    | Unix.Unix_error(Unix.EBADF, _, _) ->
-      Log.info (fun f -> f "recv: EBADFD: connection has been closed, stopping thread")
-    | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
-      Log.info (fun f -> f "recv: ECONNREFUSED: stopping thread")
-  ) () in
+  let t = {
+    fd = fd;
+    send_q = Queue.create ();
+    send_done = false;
+    send_len = 0;
+    send_waiters = Queue.create ();
+    send_m = Mutex.create ();
+    send_c = Condition.create ();
+    recv_q = Queue.create ();
+    recv_len = 0;
+    recv_m = Mutex.create ();
+    recv_c = Condition.create ();
+    recv_u = None;
+    mtu = mtu
+  } in
+  let _ : Thread.t = Thread.create (fun () -> send_thread t) () in
+  let _ : Thread.t = Thread.create (fun () -> receive_thread t) () in
   Lwt.return t
 
 let send flow buf =
@@ -124,11 +138,23 @@ let send flow buf =
   let len = Cstruct.length buf in
   let copy = Cstruct.create len in
   Cstruct.blit buf 0 copy 0 len;
-  Mutex.lock flow.send_m;
-  Queue.push copy flow.send_q;
-  Condition.signal flow.send_c;
-  Mutex.unlock flow.send_m;
-  Lwt.return len
+  let rec loop () =
+    Mutex.lock flow.send_m;
+    if flow.send_len + len > max_buffer then begin
+      let t, u = Lwt.wait () in
+      Queue.push u flow.send_waiters;
+      Mutex.unlock flow.send_m;
+      let open Lwt.Infix in
+      t >>= fun () ->
+      loop ()
+    end else begin
+      Queue.push copy flow.send_q;
+      flow.send_len <- flow.send_len + len;
+      Condition.signal flow.send_c;
+      Mutex.unlock flow.send_m;
+      Lwt.return len
+    end in
+  loop ()
 
 let recv flow =
   Mutex.lock flow.recv_m;
