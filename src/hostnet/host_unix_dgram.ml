@@ -6,28 +6,52 @@ let src =
 module Log = (val Logs.src_log src : Logs.LOG)
 
 type flow = {
+  (* SOCK_DGRAM socket. Ethernet frames are sent and received using send(2) and recv(2) *)
   fd: Unix.file_descr;
-  send_q: Cstruct.t Queue.t; (* TODO: limit *)
+  (* A transmit queue. Packets are transmitted asynchronously by a background thread. *)
+  send_q: Cstruct.t Queue.t;
+  mutable send_done: bool;
   send_m: Mutex.t;
   send_c: Condition.t;
-  recv_q: Cstruct.t Queue.t; (* TODO: limit *)
+  (* A receive queue. Packets are received asynchronously by a background thread. *)
+  recv_q: Cstruct.t Queue.t;
+  (* Amount of data currently queued *)
+  mutable recv_len: int;
   recv_m: Mutex.t;
+  (* Signalled when there is space in the queue *)
+  recv_c: Condition.t;
+  (* If the receive queue is empty then an Lwt thread can block itself here and will be woken up
+     by the next packet arrival. If there is no waiting Lwt thread then packets are queued. *)
   mutable recv_u: Cstruct.t Lwt.u option;
   mtu: int;
 }
 
+let max_buffer = Constants.mib
+
+exception Done
+
 let of_bound_fd ?(mtu=65536) fd =
   Log.info (fun f -> f "SOCK_DGRAM interface using MTU %d" mtu);
   let send_q = Queue.create () in
+  let send_done = false in
   let send_m = Mutex.create () in
   let send_c = Condition.create () in
+  let recv_q = Queue.create () in
+  let recv_len = 0 in
+  let recv_m = Mutex.create () in
+  let recv_c = Condition.create () in
+  let recv_u = None in
+  let t = {fd; send_q; send_done; send_m; send_c; recv_q; recv_len; recv_m; recv_c; recv_u; mtu} in
+
   let _ : Thread.t = Thread.create (fun () ->
+    (* Background transmit thread *)
     try
       while true do
         Mutex.lock send_m;
-        while Queue.is_empty send_q do
+        while Queue.is_empty send_q && not t.send_done do
           Condition.wait send_c send_m;
         done;
+        if t.send_done then raise Done;
         let to_send = Queue.copy send_q in
         Queue.clear send_q;
         Mutex.unlock send_m;
@@ -46,17 +70,16 @@ let of_bound_fd ?(mtu=65536) fd =
     with
     | Unix.Unix_error(Unix.EBADF, _, _) ->
       Log.info (fun f -> f "send: EBADFD: connection has been closed, stopping thread")
+    | Done ->
+      Log.info (fun f -> f "send: fd has been closed, stopping thread")
     | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
       Log.info (fun f -> f "send: ECONNREFUSED: stopping thread")
   ) () in
-  let recv_q = Queue.create () in
-  let recv_m = Mutex.create () in
-  let recv_u = None in
-  let t = {fd; send_q; send_m; send_c; recv_q; recv_m; recv_u; mtu} in
+
   let _: Thread.t = Thread.create (fun() ->
     try
       (* Many packets are small ACKs so cache an allocated buffer *)
-      let allocation_size = 1048576 in
+      let allocation_size = Constants.mib in
       let recv_buffer = ref (Cstruct.create allocation_size) in
       while true do
         if Cstruct.length !recv_buffer < mtu
@@ -66,15 +89,25 @@ let of_bound_fd ?(mtu=65536) fd =
         recv_buffer := Cstruct.shift !recv_buffer n;
         Log.debug (fun f -> f "recv %d" n);
         Mutex.lock recv_m;
-        begin match t.recv_u with
-        | None ->
-          (* No-one is waiting so queue the packet *)
-          Queue.push packet recv_q;
-        | Some waiter ->
-          (* A caller is blocked in recv already *)
-          Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
-          t.recv_u <- None
-        end;
+        let handled = ref false in
+        while not !handled do
+          match t.recv_u with
+          | None ->
+            (* No-one is waiting so consider queueing the packet *)
+            if n + t.recv_len > max_buffer then begin
+              Condition.wait t.recv_c t.recv_m
+              (* Note we need to check t.recv_u again *)
+            end else begin
+              Queue.push packet recv_q;
+              t.recv_len <- t.recv_len + n;
+              handled := true;
+            end
+          | Some waiter ->
+            (* A caller is blocked in recv already *)
+            Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later waiter packet);
+            t.recv_u <- None;
+            handled := true;
+        done;
         (* Is someone already waiting *)
         Mutex.unlock recv_m;
       done
@@ -102,6 +135,8 @@ let recv flow =
   if not(Queue.is_empty flow.recv_q) then begin
     (* A packet is already queued *)
     let packet = Queue.pop flow.recv_q in
+    flow.recv_len <- flow.recv_len - (Cstruct.length packet);
+    Condition.signal flow.recv_c;
     Mutex.unlock flow.recv_m;
     Lwt.return packet
   end else begin
@@ -109,12 +144,17 @@ let recv flow =
     assert (flow.recv_u = None);
     let t, u = Lwt.wait () in
     flow.recv_u <- Some u;
+    Condition.signal flow.recv_c;
     Mutex.unlock flow.recv_m;
     (* Wait for a packet to arrive *)
     t
   end
 
 let close flow =
+  Mutex.lock flow.send_m;
+  flow.send_done <- true;
+  Condition.signal flow.send_c;
+  Mutex.unlock flow.send_m;
   Unix.close flow.fd
 
 let%test_unit "socketpair" =
