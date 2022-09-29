@@ -134,13 +134,11 @@ let of_bound_fd ?(mtu=65536) fd =
   Lwt.return t
 
 let send flow buf =
-  (* Since we don't wait to send the buffer we have to copy it *)
   let len = Cstruct.length buf in
-  let copy = Cstruct.create len in
-  Cstruct.blit buf 0 copy 0 len;
   let rec loop () =
     Mutex.lock flow.send_m;
     if flow.send_len + len > max_buffer then begin
+      (* Too much data is queued. We will wait and this will add backpressure *)
       let t, u = Lwt.wait () in
       Queue.push u flow.send_waiters;
       Mutex.unlock flow.send_m;
@@ -148,7 +146,7 @@ let send flow buf =
       t >>= fun () ->
       loop ()
     end else begin
-      Queue.push copy flow.send_q;
+      Queue.push buf flow.send_q;
       flow.send_len <- flow.send_len + len;
       Condition.signal flow.send_c;
       Mutex.unlock flow.send_m;
@@ -237,21 +235,10 @@ let read t =
   let n = Cstruct.length buf in
   if n = 0
   then Lwt.return @@ Ok `Eof
-  else Lwt.return @@ Ok (`Data (Cstruct.sub buf 0 n))
+  else Lwt.return @@ Ok (`Data buf)
 
 let read_into _t _buf = failwith "read_into not implemented for SOCK_DGRAM"
-(*
-let read_into t buf =
-  (* FIXME: this API doesn't work with datagrams *)
-  recv t
-  >>= fun buf' ->
-  let n = Cstruct.length buf' in
-  if n <> Cstruct.length buf
-  then failwith (Printf.sprintf "read_into buf len = %d, only read %d" (Cstruct.length buf) n)
-  else
-    Cstruct.blit buf' 0 buf 0 
-    Lwt.return @@ Ok (`Data ())
-*)
+
 let write t buf =
   send t buf
   >>= fun n ->
@@ -260,11 +247,15 @@ let write t buf =
   else Lwt.return @@ Ok ()
 
 let writev t bufs =
+  Log.info (fun f -> f "writev len = %d" (List.length bufs));
   let buf = Cstruct.concat bufs in
   write t buf
 
 let close t =  close t; Lwt.return_unit
 
+(* A server listens on a Unix domain socket for connections and then receives SOCK_DGRAM
+   file descriptors. In case someone connects and doesn't know the protocol we have a text
+   error message describing what the socket is really for. *)
 type server = {
   fd: Unix.file_descr;
 }
@@ -275,44 +266,48 @@ let magic = "VMNET"
 let error_message = "This socket receives SOCK_DGRAM file descriptors for sending and receiving ethernet frames.\nIt cannot be used directly.\n"
 let success_message = "OK"
 
-let connect address =
-  let fd_t, fd_u = Lwt.task () in
+(* For low-frequency tasks like binding a listening socket, we fork a pthread for one request. *)
+let run_in_pthread f =
+  let t, u = Lwt.task () in
   let _ : Thread.t = Thread.create (fun () ->
-    let result =
-      try
-        let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-        Unix.connect s (Unix.ADDR_UNIX address);
-        let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
-        let _ : int = Fd_send_recv.send_fd s (Bytes.of_string magic) 0 (String.length magic) [] a in
-        let buf = Bytes.create (String.length error_message) in
-        let n = Unix.read s buf 0 (Bytes.length buf) in
-        Unix.close s;
-        let response = Bytes.sub buf 0 n |> Bytes.to_string in
-        if response <> success_message
-        then failwith ("Host_unix_dgram.connect: " ^ response);
-        Ok b
-      with e -> Error e in
-    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u result)
+    try
+      let result = f () in
+      Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later u result)
+    with e ->
+      Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_exn u e)  
   ) () in
+  t
+
+let connect address =
   let open Lwt.Infix in
-  fd_t >>= function
+  run_in_pthread (fun () ->
+    try
+      let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      Unix.connect s (Unix.ADDR_UNIX address);
+      let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_DGRAM 0 in
+      let _ : int = Fd_send_recv.send_fd s (Bytes.of_string magic) 0 (String.length magic) [] a in
+      let buf = Bytes.create (String.length error_message) in
+      let n = Unix.read s buf 0 (Bytes.length buf) in
+      Unix.close s;
+      let response = Bytes.sub buf 0 n |> Bytes.to_string in
+      if response <> success_message
+      then failwith ("Host_unix_dgram.connect: " ^ response);
+      Ok b
+    with e -> Error e
+  ) >>= function
   | Ok fd -> of_bound_fd fd
   | Error e -> Lwt.fail e
 
 let bind ?description:_ address =
-  let fd_t, fd_u = Lwt.task () in
-  let _ : Thread.t = Thread.create (fun () ->
-    let result =
-      try
-        let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-        Unix.bind s (Unix.ADDR_UNIX address);
-        Unix.listen s 5;
-        Ok s
-      with e -> Error e in
-      Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later fd_u result)
-  ) () in
   let open Lwt.Infix in
-  fd_t >>= function
+  run_in_pthread (fun () ->
+    try
+      let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      Unix.bind s (Unix.ADDR_UNIX address);
+      Unix.listen s 5;
+      Ok s
+    with e -> Error e
+  ) >>= function
   | Ok fd -> Lwt.return { fd }
   | Error e -> Lwt.fail e
 
@@ -345,12 +340,9 @@ let listen server cb =
   ()
 
 let shutdown server =
-  let done_t, done_u = Lwt.task () in
-  let _ : Thread.t = Thread.create (fun () ->
-    Unix.close server.fd;
-    Luv_lwt.in_lwt_async (fun () -> Lwt.wakeup_later done_u ())
-  ) () in
-  done_t
+  run_in_pthread (fun () ->
+    Unix.close server.fd
+  )
 
 let%test_unit "host_unix_dgram" =
   if Sys.os_type <> "Win32" then begin
