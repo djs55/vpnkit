@@ -42,7 +42,11 @@ let of_bound_fd ?(mtu=65536) fd =
             Log.warn (fun f -> f "ENOBUFS: dropping packet")
         ) to_send;
       done
-    with Unix.Unix_error(Unix.EBADF, _, _) -> ()
+    with
+    | Unix.Unix_error(Unix.EBADF, _, _) ->
+      Log.info (fun f -> f "send: EBADFD: connection has been closed, stopping thread")
+    | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
+      Log.info (fun f -> f "send: ECONNREFUSED: stopping thread")
   ) () in
   let recv_q = Queue.create () in
   let recv_m = Mutex.create () in
@@ -50,10 +54,15 @@ let of_bound_fd ?(mtu=65536) fd =
   let t = {fd; send_q; send_m; send_c; recv_q; recv_m; recv_u; mtu} in
   let _: Thread.t = Thread.create (fun() ->
     try
+      (* Many packets are small ACKs so cache an allocated buffer *)
+      let allocation_size = 1048576 in
+      let recv_buffer = ref (Cstruct.create allocation_size) in
       while true do
-        let recv_buffer = Cstruct.create mtu in
-        let n = Utils.cstruct_recv fd recv_buffer in
-        let packet = Cstruct.sub recv_buffer 0 n in
+        if Cstruct.length !recv_buffer < mtu
+        then recv_buffer := Cstruct.create allocation_size;
+        let n = Utils.cstruct_recv fd !recv_buffer in
+        let packet = Cstruct.sub !recv_buffer 0 n in
+        recv_buffer := Cstruct.shift !recv_buffer n;
         Mutex.lock recv_m;
         begin match t.recv_u with
         | None ->
@@ -67,7 +76,11 @@ let of_bound_fd ?(mtu=65536) fd =
         (* Is someone already waiting *)
         Mutex.unlock recv_m;
       done
-    with Unix.Unix_error(Unix.EBADF, _, _) -> ()
+    with
+    | Unix.Unix_error(Unix.EBADF, _, _) ->
+      Log.info (fun f -> f "recv: EBADFD: connection has been closed, stopping thread")
+    | Unix.Unix_error(Unix.ECONNREFUSED, _, _) ->
+      Log.info (fun f -> f "recv: ECONNREFUSED: stopping thread")
   ) () in
   Lwt.return t
 
