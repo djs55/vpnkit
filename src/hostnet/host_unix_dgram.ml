@@ -33,8 +33,10 @@ let of_bound_fd ?(mtu=65536) fd =
         Mutex.unlock send_m;
         Queue.iter (fun packet ->
           try
-            let (_: int) = Utils.cstruct_send fd packet in
-            ()
+            let n = Utils.cstruct_send fd packet in
+            let len = Cstruct.length packet in
+            if n <> len
+            then Log.warn (fun f -> f "Utils.cstruct_send packet length %d but sent only %d" len n)
           with Unix.Unix_error(Unix.ENOBUFS, _, _) ->
             (* If we're out of buffer space we have to drop the packet *)
             Log.warn (fun f -> f "ENOBUFS: dropping packet")
