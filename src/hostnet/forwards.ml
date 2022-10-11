@@ -274,7 +274,7 @@ module Tcp = struct
 end
 
 module Unix = struct
-  module FLOW = Host.Sockets.Stream.Unix
+  module FLOW = Host_unix_stream
   module Remote = Read_some (FLOW)
   module Handshake = Handshake (Remote)
 
