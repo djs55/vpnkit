@@ -67,6 +67,9 @@ depends: [
   "re" {>= "1.9.0"}
   "ppx_inline_test"
 ]
+pin-depends: [
+ [ "tcpip.7.1.2~dev" "git+https://github.com/djs55/mirage-tcpip.git#fb633c59b7301005887d41e37e3276465e4a6994" ]
+]
 synopsis: "VPN-friendly networking devices for HyperKit"
 description: """
 HyperKit is a hypervisor which runs on macOS using the "hypervisor.framework".
