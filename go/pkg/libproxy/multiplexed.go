@@ -405,6 +405,9 @@ func NewMultiplexer(label string, conn io.ReadWriteCloser, allocateBackwards boo
 		events:            events,
 		allocateBackwards: allocateBackwards,
 	}
+	if err := m.Ping(); err != nil {
+		return nil, err
+	}
 	m.acceptCond = sync.NewCond(&m.metadataMutex)
 	return m, nil
 }
@@ -557,6 +560,12 @@ func (m *multiplexer) Run() {
 	}()
 }
 
+// Ping sends an echo request. It does not wait for the response. The response will be logged.
+func (m *multiplexer) Ping() error {
+	nsec := uint64(time.Now().Nanosecond())
+	return m.send(NewEchoRequest(0, nsec))
+}
+
 // DumpState writes internal multiplexer state
 func (m *multiplexer) DumpState(w io.Writer) {
 	m.eventsM.Lock()
@@ -593,6 +602,15 @@ func (m *multiplexer) run() error {
 		}
 		m.appendEvent(&event{eventType: eventRecv, frame: f})
 		switch payload := f.Payload().(type) {
+		case *EchoFrame:
+			if f.Command == EchoRequest {
+				if err := m.send(NewEchoResponse(f.ID, payload.nsec)); err != nil {
+					return err
+				}
+				continue
+			}
+			ns := uint64(time.Now().Nanosecond()) - payload.nsec
+			log.Printf("echo latency: %d ns", ns)
 		case *OpenFrame:
 			o, err := f.Open()
 			if err != nil {

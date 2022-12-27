@@ -216,6 +216,24 @@ func (win *WindowFrame) Size() int {
 	return 8
 }
 
+type EchoFrame struct {
+	nsec uint64 // monotonic time request was sent
+}
+
+func unmarshalEcho(r io.Reader) (*EchoFrame, error) {
+	e := &EchoFrame{}
+	err := binary.Read(r, binary.LittleEndian, &e.nsec)
+	return e, err
+}
+
+func (e *EchoFrame) Write(w io.Writer) error {
+	return binary.Write(w, binary.LittleEndian, e.nsec)
+}
+
+func (e *EchoFrame) Size() int {
+	return 8
+}
+
 // Command is the action requested by a message.
 type Command int8
 
@@ -230,17 +248,23 @@ const (
 	Data
 	// Window is permission to send and consume buffer space
 	Window
+	// EchoRequest is like an ICMP echo request
+	EchoRequest
+	// EchoResponse is like an ICMP echo response
+	EchoResponse
 )
 
 // Frame is the low-level message sent to the multiplexer
 type Frame struct {
-	Command  Command // Command is the action erquested
-	ID       uint32  // Id of the sub-connection, managed by the client
-	open     *OpenFrame
-	close    *CloseFrame
-	shutdown *ShutdownFrame
-	window   *WindowFrame
-	data     *DataFrame
+	Command      Command // Command is the action erquested
+	ID           uint32  // Id of the sub-connection, managed by the client
+	open         *OpenFrame
+	close        *CloseFrame
+	shutdown     *ShutdownFrame
+	window       *WindowFrame
+	data         *DataFrame
+	echoRequest  *EchoFrame
+	echoResponse *EchoFrame
 }
 
 func unmarshalFrame(r io.Reader) (*Frame, error) {
@@ -278,6 +302,18 @@ func unmarshalFrame(r io.Reader) (*Frame, error) {
 			return nil, err
 		}
 		f.data = d
+	case EchoRequest:
+		r, err := unmarshalEcho(r)
+		if err != nil {
+			return nil, err
+		}
+		f.echoRequest = r
+	case EchoResponse:
+		r, err := unmarshalEcho(r)
+		if err != nil {
+			return nil, err
+		}
+		f.echoResponse = r
 	}
 	return f, nil
 }
@@ -310,6 +346,14 @@ func (f *Frame) Write(w io.Writer) error {
 		if err := f.data.Write(w); err != nil {
 			return err
 		}
+	case EchoRequest:
+		if err := f.echoRequest.Write(w); err != nil {
+			return err
+		}
+	case EchoResponse:
+		if err := f.echoResponse.Write(w); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -329,6 +373,10 @@ func (f *Frame) Size() int {
 		len = len + f.window.Size()
 	case Data:
 		len = len + f.data.Size()
+	case EchoRequest:
+		len = len + f.echoRequest.Size()
+	case EchoResponse:
+		len = len + f.echoResponse.Size()
 	}
 	return len
 }
@@ -345,6 +393,10 @@ func (f *Frame) String() string {
 		return fmt.Sprintf("%d Window %d", f.ID, f.window.seq)
 	case Data:
 		return fmt.Sprintf("%d Data length %d", f.ID, f.data.payloadlen)
+	case EchoRequest:
+		return fmt.Sprintf("%d EchoRequest nsec=%d", f.ID, f.echoRequest.nsec)
+	case EchoResponse:
+		return fmt.Sprintf("%d EchoResponse nsec=%d", f.ID, f.echoResponse.nsec)
 	default:
 		return "unknown"
 	}
@@ -387,6 +439,10 @@ func (f *Frame) Payload() interface{} {
 		return f.window
 	case Data:
 		return f.data
+	case EchoRequest:
+		return f.echoRequest
+	case EchoResponse:
+		return f.echoResponse
 	default:
 		return nil
 	}
@@ -439,5 +495,27 @@ func NewClose(ID uint32) *Frame {
 	return &Frame{
 		Command: Close,
 		ID:      ID,
+	}
+}
+
+// NewEchoRequest creates an echo request frame
+func NewEchoRequest(ID uint32, nsec uint64) *Frame {
+	return &Frame{
+		Command: EchoRequest,
+		ID:      ID,
+		echoRequest: &EchoFrame{
+			nsec: nsec,
+		},
+	}
+}
+
+// NewEchoResponse creates an echo response frame
+func NewEchoResponse(ID uint32, nsec uint64) *Frame {
+	return &Frame{
+		Command: EchoResponse,
+		ID:      ID,
+		echoResponse: &EchoFrame{
+			nsec: nsec,
+		},
 	}
 }
