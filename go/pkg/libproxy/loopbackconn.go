@@ -17,7 +17,11 @@ import (
 //   and reads return EOF after the buffer is exhausted
 
 type bufferedPipe struct {
-	bufs         [][]byte
+	bufs       [][]byte
+	len        uint
+	max        uint64     // max buffer space, 0 means unlimited
+	availableC *sync.Cond // signaled when space becomes available for Write to unblock
+
 	eof          bool
 	m            sync.Mutex
 	c            *sync.Cond
@@ -27,7 +31,17 @@ type bufferedPipe struct {
 func newBufferedPipe() *bufferedPipe {
 	b := &bufferedPipe{}
 	b.c = sync.NewCond(&b.m)
+	b.availableC = sync.NewCond(&b.m)
 	return b
+}
+
+// SetWriteBuffer sets the size of the operating system's write buffer associated with the connection.
+// See similar function https://pkg.go.dev/net#IPConn.SetWriteBuffer
+func (pipe *bufferedPipe) SetWriteBuffer(bytes uint) error {
+	pipe.m.Lock()
+	defer pipe.m.Unlock()
+	pipe.max = uint64(bytes)
+	return nil
 }
 
 func (pipe *bufferedPipe) TryReadLocked(p []byte) (n int, err error) {
@@ -40,7 +54,8 @@ func (pipe *bufferedPipe) TryReadLocked(p []byte) (n int, err error) {
 			// first fragment consumed
 			pipe.bufs = pipe.bufs[1:]
 		}
-
+		pipe.len = pipe.len - uint(n)
+		pipe.availableC.Broadcast()
 		return n, nil
 	}
 	if pipe.eof {
@@ -120,9 +135,27 @@ func (pipe *bufferedPipe) Write(p []byte) (n int, err error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	pipe.bufs = append(pipe.bufs, buf)
+	toWrite := len(p)
+	spaceAvailable := 0
+	for {
+		if pipe.max == 0 {
+			// unlimited
+			spaceAvailable = toWrite
+			break
+		}
+		spaceAvailable = int(pipe.max - uint64(pipe.len))
+		if spaceAvailable > 0 {
+			break
+		}
+		pipe.availableC.Wait()
+	}
+	if spaceAvailable < toWrite {
+		toWrite = spaceAvailable
+	}
+	pipe.bufs = append(pipe.bufs, buf[0:toWrite])
+	pipe.len = pipe.len + uint(toWrite)
 	pipe.c.Broadcast()
-	return len(p), nil
+	return toWrite, nil
 }
 
 func (pipe *bufferedPipe) closeWriteNoErr() {
@@ -204,6 +237,12 @@ func (l *loopback) Write(p []byte) (n int, err error) {
 	n, err = l.write.Write(p)
 	time.Sleep(l.simulateLatency)
 	return
+}
+
+// SetWriteBuffer sets the size of the operating system's write buffer associated with the connection.
+// See similar function https://pkg.go.dev/net#IPConn.SetWriteBuffer
+func (l *loopback) SetWriteBuffer(bytes uint) error {
+	return l.write.SetWriteBuffer(bytes)
 }
 
 func (l *loopback) CloseRead() error {
