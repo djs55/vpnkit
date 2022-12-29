@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -15,23 +16,31 @@ import (
 )
 
 func main() {
-	len := flag.Int("len", 1024*1024*1024, "bytes to send")
 	useSocketPair := flag.Bool("socketpair", false, "use a real OS socketpair")
-	latencyMs := flag.Int("latency", 0, "latency in ms to simulate")
+	latencyMinMs := flag.Int("latency-min", 0, "minimum latency in ms to simulate")
+	latencyMaxMs := flag.Int("latency-max", 10, "maximum latency in ms to simulate")
 	flag.Parse()
+
+	fmt.Println("# latency/ms rate/mib")
+	for latencyMs := *latencyMinMs; latencyMs < *latencyMaxMs; latencyMs++ {
+		test(*useSocketPair, latencyMs)
+	}
+}
+
+func test(useSocketPair bool, latencyMs int) {
 	over := "in memory connection"
 	var a, b net.Conn
 	var err error
-	if *useSocketPair {
+	if useSocketPair {
 		a, b, err = socketpair()
 		over = "syscall.Socketpair"
 	} else {
-		a, b, err = loopbackpair(*latencyMs)
+		a, b, err = loopbackpair(latencyMs)
 	}
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Will send %d bytes over %s", *len, over)
+	log.Printf("Will send over %s", over)
 	mA, mB, err := newConnectedMultiplexers(a, b)
 	if err != nil {
 		log.Fatal(err)
@@ -46,9 +55,10 @@ func main() {
 		}
 		defer conn.Close()
 
-		_, err = io.Copy(conn, io.LimitReader(&reader{}, int64(*len)))
+		_, err = io.Copy(conn, &reader{})
 		return err
 	})
+	received := int64(0)
 	errGroup.Go(func() error {
 		conn, err := mB.Dial(libproxy.Destination{})
 		if err != nil {
@@ -56,14 +66,19 @@ func main() {
 		}
 		defer conn.Close()
 
-		_, err = io.Copy(io.Discard, conn)
+		received, err = io.Copy(io.Discard, conn)
 		return err
 	})
+	go func() {
+		time.Sleep(time.Second)
+		_ = mA.Close()
+		_ = mB.Close()
+	}()
 	if err := errGroup.Wait(); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
-	bytesPerSec := (uint64(*len) * 1e9) / uint64(time.Since(start).Nanoseconds())
-	log.Printf("Copied %d in %s: %d GiB per second", *len, time.Since(start), bytesPerSec/(1024*1024))
+	bytesPerSec := (uint64(received) * 1e9) / uint64(time.Since(start).Nanoseconds())
+	fmt.Printf("%d %d\n", latencyMs, bytesPerSec/(1024*1024))
 }
 
 func loopbackpair(latencyMs int) (net.Conn, net.Conn, error) {
