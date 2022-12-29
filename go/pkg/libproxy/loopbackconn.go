@@ -239,6 +239,11 @@ func (l *loopback) Write(p []byte) (n int, err error) {
 	return
 }
 
+// SimulateLatency on writes
+func (l *loopback) SimulateLatency(d time.Duration) {
+	l.simulateLatency = d
+}
+
 // SetWriteBuffer sets the size of the operating system's write buffer associated with the connection.
 // See similar function https://pkg.go.dev/net#IPConn.SetWriteBuffer
 func (l *loopback) SetWriteBuffer(bytes uint) error {

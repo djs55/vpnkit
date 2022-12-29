@@ -15,8 +15,9 @@ import (
 )
 
 func main() {
-	len := flag.Int("len", 1024*1024, "bytes to send")
+	len := flag.Int("len", 1024*1024*1024, "bytes to send")
 	useSocketPair := flag.Bool("socketpair", false, "use a real OS socketpair")
+	latencyMs := flag.Int("latency", 0, "latency in ms to simulate")
 	flag.Parse()
 	over := "in memory connection"
 	var a, b net.Conn
@@ -25,7 +26,7 @@ func main() {
 		a, b, err = socketpair()
 		over = "syscall.Socketpair"
 	} else {
-		a, b, err = loopbackpair()
+		a, b, err = loopbackpair(*latencyMs)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -61,13 +62,16 @@ func main() {
 	if err := errGroup.Wait(); err != nil {
 		log.Fatal(err)
 	}
-	bytesPerSec := (uint64(*len) * 1e9) / uint64(time.Since(start))
+	bytesPerSec := (uint64(*len) * 1e9) / uint64(time.Since(start).Nanoseconds())
 	log.Printf("Copied %d in %s: %d GiB per second", *len, time.Since(start), bytesPerSec/(1024*1024))
 }
 
-func loopbackpair() (net.Conn, net.Conn, error) {
+func loopbackpair(latencyMs int) (net.Conn, net.Conn, error) {
 	l := libproxy.NewLoopback()
-	return l, l.OtherEnd(), nil
+	l.SimulateLatency(time.Millisecond * time.Duration(latencyMs))
+	l2 := l.OtherEnd()
+	l2.SimulateLatency(time.Millisecond * time.Duration(latencyMs))
+	return l, l2, nil
 }
 
 func newConnectedMultiplexers(a, b net.Conn) (libproxy.Multiplexer, libproxy.Multiplexer, error) {
