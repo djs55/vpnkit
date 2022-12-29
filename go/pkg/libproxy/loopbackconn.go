@@ -17,7 +17,7 @@ import (
 //   and reads return EOF after the buffer is exhausted
 
 type bufferedPipe struct {
-	bufs       [][]byte
+	writes     []write
 	len        uint
 	max        uint64     // max buffer space, 0 means unlimited
 	availableC *sync.Cond // signaled when space becomes available for Write to unblock
@@ -26,6 +26,10 @@ type bufferedPipe struct {
 	m            sync.Mutex
 	c            *sync.Cond
 	readDeadline time.Time
+}
+
+type write struct {
+	buf []byte
 }
 
 func newBufferedPipe() *bufferedPipe {
@@ -46,13 +50,13 @@ func (pipe *bufferedPipe) SetWriteBuffer(bytes uint) error {
 
 func (pipe *bufferedPipe) TryReadLocked(p []byte) (n int, err error) {
 	// drain buffers before considering EOF
-	if len(pipe.bufs) > 0 {
-		n := copy(p, pipe.bufs[0])
-		pipe.bufs[0] = pipe.bufs[0][n:]
+	if len(pipe.writes) > 0 {
+		n := copy(p, pipe.writes[0].buf)
+		pipe.writes[0].buf = pipe.writes[0].buf[n:]
 
-		if len(pipe.bufs[0]) == 0 {
+		if len(pipe.writes[0].buf) == 0 {
 			// first fragment consumed
-			pipe.bufs = pipe.bufs[1:]
+			pipe.writes = pipe.writes[1:]
 		}
 		pipe.len = pipe.len - uint(n)
 		pipe.availableC.Broadcast()
@@ -152,7 +156,9 @@ func (pipe *bufferedPipe) Write(p []byte) (n int, err error) {
 	if spaceAvailable < toWrite {
 		toWrite = spaceAvailable
 	}
-	pipe.bufs = append(pipe.bufs, buf[0:toWrite])
+	pipe.writes = append(pipe.writes, write{
+		buf: buf[0:toWrite],
+	})
 	pipe.len = pipe.len + uint(toWrite)
 	pipe.c.Broadcast()
 	return toWrite, nil
