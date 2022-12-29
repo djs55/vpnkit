@@ -283,7 +283,7 @@ func TestCloseThenWrite(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		loopback.simulateLatency = time.Second
+		loopback.SimulateLatency(time.Second)
 		done := make(chan struct{})
 		go func() {
 			for {

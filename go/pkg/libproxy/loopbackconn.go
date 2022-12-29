@@ -17,10 +17,11 @@ import (
 //   and reads return EOF after the buffer is exhausted
 
 type bufferedPipe struct {
-	writes     []write
-	len        uint
-	max        uint64     // max buffer space, 0 means unlimited
-	availableC *sync.Cond // signaled when space becomes available for Write to unblock
+	writes          []write
+	len             uint
+	max             uint64     // max buffer space, 0 means unlimited
+	availableC      *sync.Cond // signaled when space becomes available for Write to unblock
+	simulateLatency time.Duration
 
 	eof          bool
 	m            sync.Mutex
@@ -29,7 +30,8 @@ type bufferedPipe struct {
 }
 
 type write struct {
-	buf []byte
+	buf     []byte
+	arrival time.Time
 }
 
 func newBufferedPipe() *bufferedPipe {
@@ -51,6 +53,9 @@ func (pipe *bufferedPipe) SetWriteBuffer(bytes uint) error {
 func (pipe *bufferedPipe) TryReadLocked(p []byte) (n int, err error) {
 	// drain buffers before considering EOF
 	if len(pipe.writes) > 0 {
+		if pipe.writes[0].arrival.After(time.Now()) {
+			return 0, nil
+		}
 		n := copy(p, pipe.writes[0].buf)
 		pipe.writes[0].buf = pipe.writes[0].buf[n:]
 
@@ -157,10 +162,14 @@ func (pipe *bufferedPipe) Write(p []byte) (n int, err error) {
 		toWrite = spaceAvailable
 	}
 	pipe.writes = append(pipe.writes, write{
-		buf: buf[0:toWrite],
+		buf:     buf[0:toWrite],
+		arrival: time.Now().Add(pipe.simulateLatency),
 	})
 	pipe.len = pipe.len + uint(toWrite)
-	pipe.c.Broadcast()
+	go func() {
+		time.Sleep(pipe.simulateLatency)
+		pipe.c.Broadcast()
+	}()
 	return toWrite, nil
 }
 
@@ -177,9 +186,8 @@ func (pipe *bufferedPipe) CloseWrite() error {
 }
 
 type loopback struct {
-	write           *bufferedPipe
-	read            *bufferedPipe
-	simulateLatency time.Duration
+	write *bufferedPipe
+	read  *bufferedPipe
 }
 
 // NewLoopback creates a bidirectional buffered connection, intended for testing.
@@ -241,13 +249,13 @@ func (l *loopback) Read(p []byte) (n int, err error) {
 
 func (l *loopback) Write(p []byte) (n int, err error) {
 	n, err = l.write.Write(p)
-	time.Sleep(l.simulateLatency)
 	return
 }
 
 // SimulateLatency on writes
 func (l *loopback) SimulateLatency(d time.Duration) {
-	l.simulateLatency = d
+	l.read.simulateLatency = d
+	l.write.simulateLatency = d
 }
 
 // SetWriteBuffer sets the size of the operating system's write buffer associated with the connection.
