@@ -2,7 +2,6 @@ package libproxy
 
 import (
 	"bufio"
-	"bytes"
 	"container/ring"
 	"errors"
 	"fmt"
@@ -643,19 +642,10 @@ func (m *multiplexer) run() error {
 			if !ok {
 				return fmt.Errorf("Unknown channel id: %s", f.String())
 			}
-			// We don't use a direct io.Copy or io.CopyN to the readPipe because if they get
-			// EOF on Write, they will drop the data in the buffer and we don't know how big
-			// it was so we can't avoid desychronising the stream.
-			// We trust the clients not to write more than a Window size.
-			var buf bytes.Buffer
-			if _, err := io.CopyN(&buf, m.connR, int64(payload.payloadlen)); err != nil {
-				return fmt.Errorf("Failed to read payload of %d bytes: %s", payload.payloadlen, f.String())
-			}
-			if n, err := io.Copy(channel.readPipe, &buf); err != nil {
-				// err must be io.EOF
-				log.Printf("Discarded %d bytes from %s", int64(payload.payloadlen)-n, f.String())
-				// A confused client could send a DataFrame after a ShutdownFrame or CloseFrame.
-				// The stream is not desychronised so we can keep going.
+			if n, err := io.CopyN(channel.readPipe, m.connR, int64(payload.payloadlen)); err != nil {
+				// drop the rest of the data frame to avoid desynchronising the stream
+				log.Printf("discarding %d bytes from %s", int64(payload.payloadlen)-n, f.String())
+				_, _ = io.CopyN(io.Discard, m.connR, int64(payload.payloadlen)-n)
 			}
 		case *ShutdownFrame:
 			m.metadataMutex.Lock()
