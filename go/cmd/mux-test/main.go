@@ -19,15 +19,21 @@ func main() {
 	useSocketPair := flag.Bool("socketpair", false, "use a real OS socketpair")
 	latencyMinMs := flag.Int("latency-min", 0, "minimum latency in ms to simulate")
 	latencyMaxMs := flag.Int("latency-max", 10, "maximum latency in ms to simulate")
+	bufferMin := flag.Int("buffer-min", 65536, "minimum buffer size in bytes")
+	bufferMax := flag.Int("buffer-max", 1048576, "maximum buffer size in bytes")
+
 	flag.Parse()
 
-	fmt.Println("# latency/ms rate/mib")
+	fmt.Println("# buffer/bytes latency/ms rate/mib")
 	for latencyMs := *latencyMinMs; latencyMs < *latencyMaxMs; latencyMs++ {
-		test(*useSocketPair, latencyMs)
+		for i := 0; i < 10; i++ {
+			buffer := *bufferMin + (*bufferMax-*bufferMin)/10*i
+			test(*useSocketPair, buffer, latencyMs)
+		}
 	}
 }
 
-func test(useSocketPair bool, latencyMs int) {
+func test(useSocketPair bool, buffer, latencyMs int) {
 	over := "in memory connection"
 	var a, b net.Conn
 	var err error
@@ -54,6 +60,8 @@ func test(useSocketPair bool, latencyMs int) {
 			return err
 		}
 		defer conn.Close()
+		_ = conn.SetWriteBuffer(uint(buffer))
+		_ = conn.SetReadBuffer(uint(buffer))
 
 		_, err = io.Copy(conn, &reader{})
 		return err
@@ -65,6 +73,8 @@ func test(useSocketPair bool, latencyMs int) {
 			return err
 		}
 		defer conn.Close()
+		_ = conn.SetWriteBuffer(uint(buffer))
+		_ = conn.SetReadBuffer(uint(buffer))
 
 		received, err = io.Copy(io.Discard, conn)
 		return err
@@ -78,7 +88,7 @@ func test(useSocketPair bool, latencyMs int) {
 		log.Println(err)
 	}
 	bytesPerSec := (uint64(received) * 1e9) / uint64(time.Since(start).Nanoseconds())
-	fmt.Printf("%d %d\n", latencyMs, bytesPerSec/(1024*1024))
+	fmt.Printf("%d %d %d\n", buffer, latencyMs, bytesPerSec/(1024*1024))
 }
 
 func loopbackpair(latencyMs int) (net.Conn, net.Conn, error) {
