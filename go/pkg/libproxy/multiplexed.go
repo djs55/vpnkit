@@ -30,7 +30,7 @@ func (w *windowState) size() int {
 }
 
 func (w *windowState) isAlmostClosed() bool {
-	return w.size() < int(w.max/2)
+	return w.size() < int((3*w.max)/4)
 }
 
 func (w *windowState) advance() {
