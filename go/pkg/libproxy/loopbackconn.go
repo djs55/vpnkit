@@ -134,8 +134,6 @@ func (pipe *bufferedPipe) Read(p []byte) (n int, err error) {
 }
 
 func (pipe *bufferedPipe) Write(p []byte) (n int, err error) {
-	buf := make([]byte, len(p))
-	copy(buf, p)
 	pipe.m.Lock()
 	defer pipe.m.Unlock()
 	if pipe.eof {
@@ -161,8 +159,10 @@ func (pipe *bufferedPipe) Write(p []byte) (n int, err error) {
 	if spaceAvailable < toWrite {
 		toWrite = spaceAvailable
 	}
+	buf := make([]byte, toWrite)
+	copy(buf, p)
 	pipe.writes = append(pipe.writes, write{
-		buf:     buf[0:toWrite],
+		buf:     buf,
 		arrival: time.Now().Add(pipe.simulateLatency),
 	})
 	pipe.len = pipe.len + uint(toWrite)
