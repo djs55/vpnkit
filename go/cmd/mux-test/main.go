@@ -18,14 +18,14 @@ import (
 func main() {
 	useSocketPair := flag.Bool("socketpair", false, "use a real OS socketpair")
 	latencyMinMs := flag.Int("latency-min", 0, "minimum latency in ms to simulate")
-	latencyMaxMs := flag.Int("latency-max", 10, "maximum latency in ms to simulate")
+	latencyMaxMs := flag.Int("latency-max", 1, "maximum latency in ms to simulate")
 	bufferMin := flag.Int("buffer-min", 65536, "minimum buffer size in bytes")
 	bufferMax := flag.Int("buffer-max", 1048576, "maximum buffer size in bytes")
 
 	flag.Parse()
 
 	fmt.Println("# buffer/bytes latency/ms rate/mib")
-	for latencyMs := *latencyMinMs; latencyMs < *latencyMaxMs; latencyMs++ {
+	for latencyMs := *latencyMinMs; latencyMs <= *latencyMaxMs; latencyMs++ {
 		for i := 0; i < 10; i++ {
 			buffer := *bufferMin + (*bufferMax-*bufferMin)/10*i
 			test(*useSocketPair, buffer, latencyMs)
