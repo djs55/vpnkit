@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -62,8 +63,9 @@ func test(useSocketPair bool, buffer, latencyMs int) {
 		defer conn.Close()
 		_ = conn.SetWriteBuffer(uint(buffer))
 		_ = conn.SetReadBuffer(uint(buffer))
-
-		_, err = io.Copy(conn, &reader{})
+		b := bufio.NewWriterSize(conn, buffer)
+		defer b.Flush()
+		_, err = io.Copy(b, &reader{})
 		return err
 	})
 	received := int64(0)
