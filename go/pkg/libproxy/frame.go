@@ -178,22 +178,30 @@ type ShutdownFrame struct {
 
 // DataFrame is the header of a frame containing user data
 type DataFrame struct {
+	WindowFrame
 	payloadlen uint32
 }
 
 func unmarshalData(r io.Reader) (*DataFrame, error) {
 	d := &DataFrame{}
-	err := binary.Read(r, binary.LittleEndian, &d.payloadlen)
-	return d, err
+	w, err := unmarshalWindow(r)
+	if err != nil {
+		return nil, err
+	}
+	d.WindowFrame = *w
+	return d, binary.Read(r, binary.LittleEndian, &d.payloadlen)
 }
 
 func (d *DataFrame) Write(w io.Writer) error {
+	if err := d.WindowFrame.Write(w); err != nil {
+		return err
+	}
 	return binary.Write(w, binary.LittleEndian, d.payloadlen)
 }
 
 // Size returns the marshalled size of the data payload header
 func (d *DataFrame) Size() int {
-	return 4
+	return d.WindowFrame.Size() + 4
 }
 
 // WindowFrame is a window advertisement message
@@ -472,12 +480,15 @@ func NewOpen(ID uint32, d Destination) *Frame {
 }
 
 // NewData creates a data header frame
-func NewData(ID, payloadlen uint32) *Frame {
+func NewData(ID, payloadlen uint32, seq uint64) *Frame {
 	return &Frame{
 		Command: Data,
 		ID:      ID,
 		data: &DataFrame{
 			payloadlen: payloadlen,
+			WindowFrame: WindowFrame{
+				seq: seq,
+			},
 		},
 	}
 }

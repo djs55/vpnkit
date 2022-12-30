@@ -141,6 +141,9 @@ func (c *channel) Write(p []byte) (int, error) {
 			if toWrite > len(p) {
 				toWrite = len(p)
 			}
+			c.read.advance()
+			f := NewData(c.ID, uint32(toWrite), c.read.allowed)
+
 			// Don't block holding the metadata mutex.
 			// Note this would allow concurrent calls to Write on the same channel
 			// to conflict, but we regard that as user error.
@@ -148,7 +151,7 @@ func (c *channel) Write(p []byte) (int, error) {
 
 			// need to write the header and the payload together
 			c.multiplexer.writeMutex.Lock()
-			f := NewData(c.ID, uint32(toWrite))
+
 			c.multiplexer.appendEvent(&event{eventType: eventSend, frame: f})
 			err1 := f.Write(c.multiplexer.connW)
 			_, err2 := c.multiplexer.connW.Write(p[0:toWrite])
@@ -647,6 +650,7 @@ func (m *multiplexer) run() error {
 				log.Printf("discarding %d bytes from %s", int64(payload.payloadlen)-n, f.String())
 				_, _ = io.CopyN(io.Discard, m.connR, int64(payload.payloadlen)-n)
 			}
+			channel.recvWindowUpdate(payload.seq)
 		case *ShutdownFrame:
 			m.metadataMutex.Lock()
 			channel, ok := m.channels[f.ID]
