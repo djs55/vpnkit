@@ -20,7 +20,7 @@ func main() {
 	latencyMinMs := flag.Int("latency-min", 0, "minimum latency in ms to simulate")
 	latencyMaxMs := flag.Int("latency-max", 1, "maximum latency in ms to simulate")
 	bufferMin := flag.Int("buffer-min", 65536, "minimum buffer size in bytes")
-	bufferMax := flag.Int("buffer-max", 1048576, "maximum buffer size in bytes")
+	bufferMax := flag.Int("buffer-max", 10485760, "maximum buffer size in bytes")
 
 	flag.Parse()
 
