@@ -17,16 +17,21 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const simulatedNetworkBufferSize = 1024
+
+func newLoopback(t *testing.T) *loopback {
+	l := NewLoopback()
+	require.Nil(t, l.SetWriteBuffer(simulatedNetworkBufferSize))
+	require.Nil(t, l.OtherEnd().SetWriteBuffer(simulatedNetworkBufferSize))
+	return l
+}
+
 // create a pair of connected multiplexers
 func newLoopbackMultiplexer(t *testing.T, loopback *loopback) (Multiplexer, Multiplexer) {
 	localMuxC, localErrC := newMultiplexer("local", loopback, false)
 	remoteMuxC, remoteErrC := newMultiplexer("remote", loopback.OtherEnd(), true)
-	if err := <-localErrC; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-remoteErrC; err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, <-localErrC)
+	require.Nil(t, <-remoteErrC)
 	local := <-localMuxC
 	remote := <-remoteMuxC
 	local.Run()
@@ -47,7 +52,7 @@ func newMultiplexer(name string, conn io.ReadWriteCloser, allocateBackwards bool
 }
 
 func TestNew(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	client, err := local.Dial(Destination{
 		Proto: TCP,
@@ -64,7 +69,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	// There was a bug where the second iteration failed because the main loop had deadlocked
 	// when it received a Close message.
@@ -74,24 +79,16 @@ func TestClose(t *testing.T) {
 			IP:    net.ParseIP("127.0.0.1"),
 			Port:  8080,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		server, _, err := remote.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := server.Close(); err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
+		require.Nil(t, client.Close())
+		require.Nil(t, server.Close())
 	}
 }
 
 func TestUDPEncapsulationIsTransparent(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 
 	client, err := local.Dial(Destination{
@@ -99,39 +96,23 @@ func TestUDPEncapsulationIsTransparent(t *testing.T) {
 		IP:    net.ParseIP("127.0.0.1"),
 		Port:  8080,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	message := []byte("hello world")
 	n, err := client.Write(message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != len(message) {
-		t.Fatal("Failed to send whole message")
-	}
+	require.Nil(t, err)
+	assert.Equal(t, len(message), n)
 	buf := make([]byte, 1024)
 	n, err = server.Read(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != len(message) {
-		t.Fatalf("Failed to read whole message, read %d expected %d", n, len(message))
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+	assert.Equal(t, len(message), n)
+	require.Nil(t, client.Close())
+	require.Nil(t, server.Close())
 }
 
 func TestCloseClose(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	// There was a bug where the second iteration failed because the main loop had deadlocked
 	// when it received a Close message.
@@ -141,30 +122,18 @@ func TestCloseClose(t *testing.T) {
 			IP:    net.ParseIP("127.0.0.1"),
 			Port:  8080,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		server, _, err := remote.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := server.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if !remote.IsRunning() {
-			t.Fatal("remote multiplexer has failed")
-		}
+		require.Nil(t, err)
+		require.Nil(t, client.Close())
+		require.Nil(t, client.Close())
+		require.Nil(t, server.Close())
+		require.True(t, remote.IsRunning())
 	}
 }
 
 func TestCloseWriteCloseWrite(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	// There was a bug where the second iteration failed because the main loop had deadlocked
 	// when it received a Close message.
@@ -174,30 +143,18 @@ func TestCloseWriteCloseWrite(t *testing.T) {
 			IP:    net.ParseIP("127.0.0.1"),
 			Port:  8080,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		server, _, err := remote.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := client.CloseWrite(); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.CloseWrite(); err != nil {
-			t.Fatal(err)
-		}
-		if err := server.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if !remote.IsRunning() {
-			t.Fatal("remote multiplexer has failed")
-		}
+		require.Nil(t, err)
+		require.Nil(t, client.CloseWrite())
+		require.Nil(t, client.CloseWrite())
+		require.Nil(t, server.Close())
+		require.True(t, remote.IsRunning())
 	}
 }
 
 func TestCloseCloseWrite(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	// There was a bug where the second iteration failed because the main loop had deadlocked
 	// when it received a Close message.
@@ -207,66 +164,41 @@ func TestCloseCloseWrite(t *testing.T) {
 			IP:    net.ParseIP("127.0.0.1"),
 			Port:  8080,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		server, _, err := remote.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.CloseWrite(); err != nil {
-			t.Fatal(err)
-		}
-		if err := server.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if !remote.IsRunning() {
-			t.Fatal("remote multiplexer has failed")
-		}
+		require.Nil(t, err)
+		require.Nil(t, client.Close())
+		require.Nil(t, client.CloseWrite())
+		require.Nil(t, server.Close())
+		require.True(t, remote.IsRunning())
 	}
 }
 
 func TestCloseWriteWrite(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	client, err := local.Dial(Destination{
 		Proto: TCP,
 		IP:    net.ParseIP("127.0.0.1"),
 		Port:  8080,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	channel, ok := client.(*channel)
-	if !ok {
-		t.Fatal("conn was not a *channel")
-	}
+	require.True(t, ok)
 	channel.setTestAllowDataAfterCloseWrite()
-	if err := client.CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Write([]byte{1}); err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, client.CloseWrite())
+	_, err = client.Write([]byte{1})
+	require.Nil(t, err)
 	// FIXME: need a way to wait for the multiplexer to have processed the message.
 	time.Sleep(time.Second)
-	if !remote.IsRunning() {
-		t.Fatal("remote multiplexer has failed")
-	}
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.True(t, remote.IsRunning())
+	require.Nil(t, server.Close())
 }
 
 func TestCloseThenWrite(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	// There was a bug where the second iteration failed because the main loop had deadlocked
 	// when it received a Close message.
@@ -276,13 +208,9 @@ func TestCloseThenWrite(t *testing.T) {
 			IP:    net.ParseIP("127.0.0.1"),
 			Port:  8080,
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		server, _, err := remote.Accept()
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, err)
 		loopback.simulateLatency = time.Second
 		done := make(chan struct{})
 		go func() {
@@ -293,68 +221,45 @@ func TestCloseThenWrite(t *testing.T) {
 				}
 			}
 		}()
-		if err := client.Close(); err != nil {
-			t.Fatal(err)
-		}
+		require.Nil(t, client.Close())
 		<-done
-		if !remote.IsRunning() {
-			t.Fatal("remote multiplexer has failed")
-		}
-		if err := server.Close(); err != nil {
-			t.Fatal(err)
-		}
+		require.True(t, remote.IsRunning())
+		require.Nil(t, server.Close())
 	}
 }
 
 func TestReadDeadline(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	client, err := local.Dial(Destination{
 		Proto: TCP,
 		IP:    net.ParseIP("127.0.0.1"),
 		Port:  8080,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	// Server never writes
-	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, client.SetReadDeadline(time.Now().Add(time.Second)))
 	var b []byte
-	if _, err := client.Read(b); err == nil {
-		t.Fatalf("Read should have timed out")
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_, err = client.Read(b)
+	require.Error(t, &errTimeout{}, err)
+	require.Nil(t, client.Close())
+	require.Nil(t, server.Close())
 }
 
 func TestWriteDeadline(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	client, err := local.Dial(Destination{
 		Proto: TCP,
 		IP:    net.ParseIP("127.0.0.1"),
 		Port:  8080,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := server.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
+	require.Nil(t, server.SetWriteDeadline(time.Now().Add(time.Second)))
 	done := make(chan error)
 	go func() {
 		buf, _ := genRandomBuffer(1024)
@@ -366,12 +271,8 @@ func TestWriteDeadline(t *testing.T) {
 	}()
 	// Client never reads so the window should close
 	<-done
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
+	assert.Nil(t, client.Close())
+	assert.Nil(t, server.Close())
 }
 
 func genRandomBuffer(size int) ([]byte, string) {
@@ -399,7 +300,8 @@ func readAndSha(t *testing.T, r Conn) chan string {
 		var toRead bytes.Buffer
 		_, err := io.Copy(&toRead, r)
 		if err != nil {
-			t.Error(err)
+			result <- fmt.Sprintf("error: %s", err)
+			return
 		}
 		sha := fmt.Sprintf("% x", sha1.Sum(toRead.Bytes()))
 		result <- sha
@@ -413,15 +315,11 @@ func muxReadWrite(t *testing.T, local, remote Multiplexer, toWriteClient, toWrit
 		IP:    net.ParseIP("127.0.0.1"),
 		Port:  8080,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 	clientWriteErr, clientWriteSha := writeRandomBuffer(client, toWriteClient)
 
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, err)
 
 	serverWriteErr, serverWriteSha := writeRandomBuffer(server, toWriteServer)
 
@@ -432,18 +330,10 @@ func muxReadWrite(t *testing.T, local, remote Multiplexer, toWriteClient, toWrit
 	assertEqual(t, clientWriteSha, serverReadSha)
 	assertEqual(t, serverWriteSha, clientReadSha)
 
-	if err := <-clientWriteErr; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-serverWriteErr; err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := server.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.Nil(t, <-clientWriteErr)
+	require.Nil(t, <-serverWriteErr)
+	require.Nil(t, client.Close())
+	require.Nil(t, server.Close())
 }
 
 var (
@@ -469,7 +359,7 @@ func TestMuxCorners(t *testing.T) {
 	for _, toWriteClient := range interesting {
 		for _, toWriteServer := range interesting {
 			log.Printf("Client will write %d and server will write %d", toWriteClient, toWriteServer)
-			loopback := NewLoopback()
+			loopback := newLoopback(t)
 			local, remote := newLoopbackMultiplexer(t, loopback)
 			muxReadWrite(t, local, remote, toWriteClient, toWriteServer)
 		}
@@ -477,29 +367,27 @@ func TestMuxCorners(t *testing.T) {
 }
 
 func TestMuxReadWrite(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	muxReadWrite(t, local, remote, 1048576, 1048576)
 }
 
 func TestMuxConcurrent(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 	numConcurrent := 500 // limited by the race detector
 	toWrite := 65536 * 2 // 2 * Window size
-	wg := &sync.WaitGroup{}
 	serverWriteSha := make(map[uint16]string)
 	serverReadSha := make(map[uint16]string)
 	clientWriteSha := make(map[uint16]string)
 	clientReadSha := make(map[uint16]string)
+	var g errgroup.Group
 	m := &sync.Mutex{}
-	wg.Add(numConcurrent)
 	for i := 0; i < numConcurrent; i++ {
-		go func(i int) {
-			defer wg.Done()
+		g.Go(func() error {
 			server, destination, err := remote.Accept()
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			defer server.Close()
 			// Set the read/write buffer sizes to unusual values.
@@ -516,23 +404,20 @@ func TestMuxConcurrent(t *testing.T) {
 			serverReadSha[destination.Port] = sha
 			m.Unlock()
 
-			if err := <-done; err != nil {
-				t.Error(err)
-			}
-		}(i)
+			return <-done
+		})
 	}
 
-	wg.Add(numConcurrent)
 	for i := uint16(0); i < uint16(numConcurrent); i++ {
-		go func(i uint16) {
-			defer wg.Done()
+		i := i
+		g.Go(func() error {
 			client, err := local.Dial(Destination{
 				Proto: TCP,
 				IP:    net.ParseIP("127.0.0.1"),
 				Port:  i,
 			})
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
 			defer client.Close()
 			done, sha := writeRandomBuffer(client, toWrite)
@@ -545,12 +430,10 @@ func TestMuxConcurrent(t *testing.T) {
 			m.Lock()
 			clientReadSha[i] = sha
 			m.Unlock()
-			if err := <-done; err != nil {
-				t.Error(err)
-			}
-		}(i)
+			return <-done
+		})
 	}
-	wg.Wait()
+	require.Nil(t, g.Wait())
 	failed := false
 	for i := uint16(0); i < uint16(numConcurrent); i++ {
 		if clientWriteSha[i] != serverReadSha[i] {
@@ -562,9 +445,7 @@ func TestMuxConcurrent(t *testing.T) {
 			failed = true
 		}
 	}
-	if failed {
-		t.Errorf("SHA mismatch")
-	}
+	require.False(t, failed)
 }
 
 func writeAndBlock(t *testing.T, local, remote Multiplexer) chan error {
@@ -577,13 +458,9 @@ func writeAndBlock(t *testing.T, local, remote Multiplexer) chan error {
 		t.Fatal(err)
 	}
 	server, _, err := remote.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := server.SetWriteDeadline(time.Now().Add(1 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
+	require.Nil(t, err)
+	require.Nil(t, server.SetWriteDeadline(time.Now().Add(1*time.Second)))
+	done := make(chan error, 2)
 	go func() {
 		buf, _ := genRandomBuffer(1024)
 		for {
@@ -594,10 +471,10 @@ func writeAndBlock(t *testing.T, local, remote Multiplexer) chan error {
 			}
 		}
 		if err := client.Close(); err != nil {
-			t.Fatal(err)
+			done <- err
 		}
 		if err := server.Close(); err != nil {
-			t.Fatal(err)
+			done <- err
 		}
 		close(done)
 	}()
@@ -610,7 +487,7 @@ func TestWindow(t *testing.T) {
 	// Check that one connection blocked on a window update doesn't preclude
 	// other connections from working i.e. the lowlevel connection handler isn't
 	// itself blocked in a write()
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	local, remote := newLoopbackMultiplexer(t, loopback)
 
 	done := writeAndBlock(t, local, remote)
@@ -618,28 +495,26 @@ func TestWindow(t *testing.T) {
 	muxReadWrite(t, local, remote, 1048576, 1048576)
 
 	select {
-	case <-done:
+	case err := <-done:
+		require.Nil(t, err)
 		t.Fatalf("the second connection was blocked by the first")
 	default:
 		fmt.Println("second connection completed while the first was blocked")
-		<-done
+		err := <-done
+		require.Nil(t, err)
 		fmt.Println("first connection has now unblocked")
 	}
 }
 
 func TestEOF(t *testing.T) {
-	loopback := NewLoopback()
-	if err := loopback.OtherEnd().Close(); err != nil {
-		t.Fatal(err)
-	}
+	loopback := newLoopback(t)
+	require.Nil(t, loopback.OtherEnd().Close())
 	_, err := NewMultiplexer("test", loopback, false)
-	if err != io.EOF {
-		t.Fatal(err)
-	}
+	assert.Equal(t, io.EOF, err)
 }
 
 func TestCrossChannelOpening(t *testing.T) {
-	loopback := NewLoopback()
+	loopback := newLoopback(t)
 	muxHost, muxGuest := newLoopbackMultiplexer(t, loopback)
 	acceptG := &errgroup.Group{}
 	acceptG.Go(func() error {
@@ -655,7 +530,9 @@ func TestCrossChannelOpening(t *testing.T) {
 			if err := binary.Write(c, binary.LittleEndian, m); err != nil {
 				return err
 			}
-			_ = c.Close()
+			if err := c.Close(); err != nil {
+				return err
+			}
 		}
 	})
 	acceptG.Go(func() error {
@@ -671,7 +548,9 @@ func TestCrossChannelOpening(t *testing.T) {
 			if err := binary.Write(c, binary.LittleEndian, m); err != nil {
 				return err
 			}
-			_ = c.Close()
+			if err := c.Close(); err != nil {
+				return err
+			}
 		}
 	})
 	g := &errgroup.Group{}
@@ -689,7 +568,9 @@ func TestCrossChannelOpening(t *testing.T) {
 			if err := binary.Read(c, binary.LittleEndian, &m); err != nil {
 				return err
 			}
-			_ = c.Close()
+			if err := c.Close(); err != nil {
+				return err
+			}
 			log.Print("muxHost negociation succeeded")
 			return nil
 		})
@@ -706,10 +587,12 @@ func TestCrossChannelOpening(t *testing.T) {
 			if err := binary.Read(c, binary.LittleEndian, &m); err != nil {
 				return err
 			}
-			_ = c.Close()
+			if err := c.Close(); err != nil {
+				return err
+			}
 			log.Print("muxGuest negociation succeeded")
 			return nil
 		})
 	}
-	_ = g.Wait()
+	assert.Nil(t, g.Wait())
 }
