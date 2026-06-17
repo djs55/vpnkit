@@ -2,6 +2,7 @@
 ; consuming virtual libraries (mirage-mtime, mirage-sleep, ...) which ship a
 ; .cmi but no .cmx, and ocaml-ci builds with -warn-error so it becomes fatal.
 ; It is a benign cross-module-inlining hint, not a correctness issue.
+
 (env
  (_
   (flags
