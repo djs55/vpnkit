@@ -60,7 +60,7 @@ DNS requests etc. HyperKit and VPNKit are used in Docker for Mac and Windows.")
     (io-page (>= 3.0.0))
     uuidm
     (ezjsonm (>= 0.4.0))
-    (sha :with-test)
+    (sha (and (>= "1.15") :with-test))
     stringext
     (mirage-sleep (>= 4.0.0))
     (mirage-mtime (>= 5.1.0))
