@@ -136,15 +136,14 @@ end = struct
   let writev flow = FLOW.writev flow.flow
   let close flow = FLOW.close flow.flow
   let shutdown_write flow = FLOW.shutdown flow.flow `write
-  let shutdown_read flow = FLOW.shutdown flow.flow `read 
+  let shutdown_read flow = FLOW.shutdown flow.flow `read
 
   let shutdown f = function
     | `read -> shutdown_read f
     | `write -> shutdown_write f
     | `read_write ->
-       let open Lwt.Infix in
-       shutdown_read f >>= fun () ->
-       shutdown_write f
+        let open Lwt.Infix in
+        shutdown_read f >>= fun () -> shutdown_write f
 end
 
 module Handshake (FLOW : Read_some) = struct
@@ -414,7 +413,8 @@ module Stream = struct
       | `Direct flow -> Direct.close flow
       | `Forwarded flow -> Forwarded.close flow
 
-    let shutdown f v = match f with
+    let shutdown f v =
+      match f with
       | `Direct flow -> Direct.shutdown flow v
       | `Forwarded flow -> Forwarded.shutdown flow v
   end

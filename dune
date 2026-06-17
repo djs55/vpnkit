@@ -1,13 +1,13 @@
 (rule
  (alias e2e)
- (deps src/hostnet_test/main.exe
-   go/test_inputs/open_dedicated_connection.bin
-   go/test_inputs/close.bin
-   go/test_inputs/open_multiplexed_unix_connection.bin
-   go/test_inputs/window.bin
-   go/test_inputs/data.bin
-   go/test_inputs/open_multiplexed_connection.bin
-   go/test_inputs/shutdown.bin
-   )
- (action (run ./src/hostnet_test/main.exe))
-)
+ (deps
+  src/hostnet_test/main.exe
+  go/test_inputs/open_dedicated_connection.bin
+  go/test_inputs/close.bin
+  go/test_inputs/open_multiplexed_unix_connection.bin
+  go/test_inputs/window.bin
+  go/test_inputs/data.bin
+  go/test_inputs/open_multiplexed_connection.bin
+  go/test_inputs/shutdown.bin)
+ (action
+  (run ./src/hostnet_test/main.exe)))

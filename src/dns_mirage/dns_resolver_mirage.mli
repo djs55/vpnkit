@@ -25,31 +25,37 @@ module type S = sig
 
   val resolve :
     (module Dns.Protocol.CLIENT) ->
-    t -> Ipaddr.t -> int ->
+    t ->
+    Ipaddr.t ->
+    int ->
     Dns.Packet.q_class ->
     Dns.Packet.q_type ->
     Dns.Name.t ->
     Dns.Packet.t Lwt.t
 
-  val gethostbyname : t ->
-    ?server:Ipaddr.t -> ?dns_port:int ->
+  val gethostbyname :
+    t ->
+    ?server:Ipaddr.t ->
+    ?dns_port:int ->
     ?q_class:Dns.Packet.q_class ->
     ?q_type:Dns.Packet.q_type ->
-    string -> Ipaddr.t list Lwt.t
+    string ->
+    Ipaddr.t list Lwt.t
 
-  val gethostbyaddr : t ->
-    ?server:Ipaddr.t -> ?dns_port:int ->
+  val gethostbyaddr :
+    t ->
+    ?server:Ipaddr.t ->
+    ?dns_port:int ->
     ?q_class:Dns.Packet.q_class ->
     ?q_type:Dns.Packet.q_type ->
-    Ipaddr.V4.t -> string list Lwt.t
+    Ipaddr.V4.t ->
+    string list Lwt.t
 end
 
-type static_dns = 
-{
-  names: (string, Ipaddr.t) Hashtbl.t;
-  rev: (Ipaddr.V4.t, string) Hashtbl.t;
+type static_dns = {
+  names : (string, Ipaddr.t) Hashtbl.t;
+  rev : (Ipaddr.V4.t, string) Hashtbl.t;
 }
 
 module Static : S with type stack = static_dns
-
-module Make(S:Tcpip.Stack.V4V6) : S with type stack = S.t
+module Make (S : Tcpip.Stack.V4V6) : S with type stack = S.t
