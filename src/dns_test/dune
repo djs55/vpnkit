@@ -1,5 +1,5 @@
 (test
   (name       test)
-  (libraries  dns ounit2 pcap-format bigarray bigarray-compat lwt)
+  (libraries  dns ounit2 pcap-format bigarray lwt)
   (deps       (glob_files *.pcap) (glob_files *.zone))
   (preprocess (pps ppx_cstruct)))
