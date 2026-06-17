@@ -2,8 +2,8 @@
  (name main)
  (public_name vpnkit)
  (libraries cmdliner ofs logs.fmt hostnet hvsock hvsock.lwt
-   fd-send-recv duration mirage-clock-unix mirage-random
-   fs9p mirage-random-stdlib dune-build-info)
+   fd-send-recv duration mirage-sleep
+   fs9p dune-build-info)
  (flags
   :standard
   (:include flags.sexp))
